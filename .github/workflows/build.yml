@@ -1,0 +1,84 @@
+name: Build WaterBarTester
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ created ]
+
+jobs:
+  # ── 1. Lint ─────────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install flake8
+      - run: flake8 . --max-line-length=120 --exclude=.github
+
+  # ── 2. Syntax / import check ────────────────────────────────────────
+  check:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pyserial
+      - name: Check all Python files parse
+        run: |
+          python - <<'EOF'
+          import ast, sys, pathlib
+          errors = []
+          for f in pathlib.Path(".").rglob("*.py"):
+              try:
+                  ast.parse(f.read_text(encoding="utf-8"))
+              except SyntaxError as e:
+                  errors.append(f"{f}: {e}")
+          if errors:
+              print("\n".join(errors)); sys.exit(1)
+          print(f"OK: {sum(1 for _ in pathlib.Path('.').rglob('*.py'))} files")
+          EOF
+
+  # ── 3. Build .exe ────────────────────────────────────────────────────
+  build-exe:
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install dependencies
+        run: pip install pyserial pyinstaller
+
+      - name: Build exe
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name WaterBarTester `
+            --add-data "tests;tests" `
+            --add-data "core;core" `
+            --add-data "runner;runner" `
+            --hidden-import serial `
+            --hidden-import serial.tools `
+            --hidden-import serial.tools.list_ports `
+            water_bar_tester.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WaterBarTester-exe
+          path: dist/WaterBarTester.exe
+          retention-days: 30
+
+      # При создании Release — прикрепить exe к релизу
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/WaterBarTester.exe
