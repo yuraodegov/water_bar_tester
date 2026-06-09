@@ -88,6 +88,8 @@ def run_gui():
             "cold_max_temp":   float(cold_max_var.get() or 11),
             "filter_max_liters": float(fmax_var.get() or 5000),
             "use_hydraulic":   use_hydr_var.get(),
+            "long_term_cycles": int(long_cycles_var.get() or 17),
+            "long_term_pause_sec": int(pause_var.get() or 300),
         }
 
     def selected_tests():
@@ -338,6 +340,10 @@ def run_gui():
     hot_min_var  = tk.StringVar(value="85")
     cold_max_var = tk.StringVar(value="11")
     fmax_var     = tk.StringVar(value="5000")
+    long_cycles_var = tk.StringVar(value="17")
+    pause_var = tk.StringVar(value="300")
+    lrow("Long Cycles", long_cycles_var)
+    lrow("Pause (sec)", pause_var)
     lrow("Target (L)",      target_var)
     lrow("Press dur (ms)",  duration_var)
     lrow("Pour wait (s)",   wait_var)
