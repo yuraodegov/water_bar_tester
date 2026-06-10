@@ -57,6 +57,7 @@ class BaseTest:
         return None
 
     def _require_hydraulic(self) -> TestResult | None:
+        
         if self.hydraulic is None or not self.hydraulic.is_connected():
             return self._fail("Hydraulic not connected")
         return None

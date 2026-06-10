@@ -27,7 +27,7 @@ def run_gui():
     import tkinter.messagebox as mb
     import tkinter.filedialog as fd
 
-    # ── цвета ────────────────────────────────────────────────────────
+    # ── colors ────────────────────────────────────────────────────────
     BG       = "#1a1f2e"
     BG2      = "#242938"
     BG3      = "#2e3447"
@@ -48,7 +48,7 @@ def run_gui():
     root.configure(bg=BG)
     root.resizable(True, True)
 
-    # ── состояние ────────────────────────────────────────────────────
+    # ── state ────────────────────────────────────────────────────
     hmi_dev:  HmiSerial        = None
     hydr_dev: HydraulicSerial  = None
     runner:   TestRunner       = None
@@ -96,7 +96,7 @@ def run_gui():
         sel = [n for n, v in test_vars.items() if v.get()]
         return sel if sel else list(all_tests.keys())
 
-    # ── подключение ──────────────────────────────────────────────────
+    # ── connection ──────────────────────────────────────────────────
     def connect_hmi():
         nonlocal hmi_dev
         port = hmi_port_var.get().strip()
@@ -153,7 +153,7 @@ def run_gui():
         ok = hmi_dev is not None and hmi_dev.is_connected()
         btn_run.configure(state="normal" if ok else "disabled")
 
-    # ── ручное нажатие кнопок ─────────────────────────────────────────
+    # ── manual pressing of buttons ─────────────────────────────────────────
     def manual_press(btn_id: int, btn_name: str):
         if hmi_dev is None or not hmi_dev.is_connected():
             log("[ERROR] HMI not connected.", RED)
@@ -165,7 +165,7 @@ def run_gui():
             root.after(0, lambda: log(f"  → {resp}", DIM))
         threading.Thread(target=_t, daemon=True).start()
 
-    # ── запуск тестов ─────────────────────────────────────────────────
+    # ── running tests ─────────────────────────────────────────────────
     def run_tests():
         nonlocal runner
         if hmi_dev is None:
@@ -197,7 +197,7 @@ def run_gui():
         for line in report.splitlines():
             c = GREEN if "✓" in line else (RED if "✗" in line else TEXT)
             log(line, c)
-        # сохранить
+        # save
         ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = os.path.join(BASE_DIR, "reports", f"report_{ts}.txt")
         os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -352,7 +352,7 @@ def run_gui():
     lrow("Cold max (°C)",   cold_max_var)
     lrow("Filter max (L)",  fmax_var)
 
-    # ── 8 кнопок ручного нажатия ─────────────────────────────────────
+    # ── 8 manual push buttons ─────────────────────────────────────
     sec("MANUAL BUTTONS")
     BTN_LAYOUT = [
         (1, "HOT GLASS",  "#7f1d1d"),

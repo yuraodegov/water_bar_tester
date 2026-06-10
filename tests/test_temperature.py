@@ -1,6 +1,6 @@
 """
 tests/test_temperature.py
-Проверяет температуру воды через Hydraulic get_temp.
+Checks the water temperature through Hydraulic get_temp.
 """
 from tests.test_base import BaseTest, TestResult
 
@@ -28,7 +28,7 @@ class TestTemperature(BaseTest):
         self.log(f"  Temps: {temps}")
         errors = []
 
-        # горячая — ищем heater_bsp или hot
+        # Hot — search for heater_bsp or hot
         hot_val = temps.get("heater_bsp") or temps.get("hot")
         if hot_val is not None:
             if hot_val < hot_min:
@@ -36,7 +36,7 @@ class TestTemperature(BaseTest):
         else:
             self.log("  [WARN] hot temp not found in response")
 
-        # холодная — cooler_setpoint_off или cold
+        # cold — cooler_setpoint_off or cold
         cold_val = temps.get("cooler_setpoint_off") or temps.get("cold")
         if cold_val is not None:
             if cold_val > cold_max:
