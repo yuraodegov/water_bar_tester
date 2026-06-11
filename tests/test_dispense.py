@@ -19,12 +19,19 @@ TOLERANCE_ML = 150
 
 
 def _run_dispense(test: BaseTest, button_id: int,
-                  counter_key: str, label: str) -> TestResult:
+                  counter_key: str, label: str,
+                  expected_ml: int = None) -> TestResult:
     err = test._require_hmi()
     if err:
         return err
 
-    target_ml = int(float(test.config.get("target_liters", 1)) * 1000)
+    # expected volume for this specific button (glass vs jug, hot vs cold)
+    if expected_ml is None:
+        target_ml = int(float(test.config.get("target_liters", 1)) * 1000)
+    else:
+        # allow GUI override via config key like "expected_cold_glass_ml"
+        cfg_key = "expected_" + label.lower().replace(" ", "_") + "_ml"
+        target_ml = int(test.config.get(cfg_key, expected_ml))
     duration_ms = int(test.config.get("press_duration_ms", 1000))
     wait_sec = float(test.config.get("pour_wait_sec", 40))
     use_hydraulic = test.config.get("use_hydraulic", True)
@@ -134,53 +141,53 @@ def _run_dispense(test: BaseTest, button_id: int,
 
 class TestColdGlass(BaseTest):
     NAME = "Cold Glass (btn 4)"
-    DESCRIPTION = "press 4 COLD GLASS — delta total/filter/cold/pulse."
+    DESCRIPTION = "press 4 COLD GLASS — glass dose 200 ml. delta total/filter/cold."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 4, "cold", "COLD GLASS")
+        return _run_dispense(self, 4, "cold", "COLD GLASS", expected_ml=200)
 
 
 class TestColdJug(BaseTest):
     NAME = "Cold Jug (btn 5)"
-    DESCRIPTION = "press 5 COLD JUG — delta total/filter/cold/pulse."
+    DESCRIPTION = "press 5 COLD JUG — jug dose 1000 ml. delta total/filter/cold."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 5, "cold", "COLD JUG")
+        return _run_dispense(self, 5, "cold", "COLD JUG", expected_ml=1000)
 
 
 class TestAmbGlass(BaseTest):
     NAME = "Ambient Glass (btn 6)"
-    DESCRIPTION = "press 6 AMB GLASS — delta total/filter/amb/pulse."
+    DESCRIPTION = "press 6 AMB GLASS — glass dose 200 ml. delta total/filter/amb."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 6, "amb", "AMB GLASS")
+        return _run_dispense(self, 6, "amb", "AMB GLASS", expected_ml=200)
 
 
 class TestAmbJug(BaseTest):
     NAME = "Ambient Jug (btn 7)"
-    DESCRIPTION = "press 7 AMB JUG — delta total/filter/amb/pulse."
+    DESCRIPTION = "press 7 AMB JUG — jug dose 1000 ml. delta total/filter/amb."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 7, "amb", "AMB JUG")
+        return _run_dispense(self, 7, "amb", "AMB JUG", expected_ml=1000)
 
 
 class TestHotGlass(BaseTest):
     NAME = "Hot Glass (btn 1)"
-    DESCRIPTION = "press 1 HOT GLASS — delta total/filter/pulse."
+    DESCRIPTION = "press 1 HOT GLASS — glass dose 150 ml. delta total/filter."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 1, "total", "HOT GLASS")
+        return _run_dispense(self, 1, "total", "HOT GLASS", expected_ml=150)
 
 
 class TestHotJug(BaseTest):
     NAME = "Hot Jug (btn 2)"
-    DESCRIPTION = "press 2 HOT JUG — delta total/filter/pulse."
+    DESCRIPTION = "press 2 HOT JUG — jug dose 1000 ml. delta total/filter."
     CATEGORY = "dispense"
 
     def run(self) -> TestResult:
-        return _run_dispense(self, 2, "total", "HOT JUG")
+        return _run_dispense(self, 2, "total", "HOT JUG", expected_ml=1000)
