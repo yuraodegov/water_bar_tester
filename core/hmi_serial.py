@@ -1,121 +1,100 @@
 """
 core/hmi_serial.py — соединение с HMI UI.
 
-Команды (из help лога):
-  press <key>                   — нажать кнопку
-  get_counter <id>              — прочитать счётчик
-  set_counter <id> <value>      — сбросить счётчик
-  get_param / set_param <id> <v>
-  get_temp
-  get_error
-  get_rtc / set_rtc
-  info / ver
+Команды:
+  press <key> <duration_ms>
+  get_counter <id>  /  set_counter <id> <value>
+  get_param [id]   /  set_param <id> <value>
+  get_temp, get_error, get_rtc, info
 
 Кнопки:
-  1 = HOT GLASS     2 = HOT JUG
-  4 = COLD GLASS    5 = COLD JUG
-  6 = AMB GLASS     7 = AMB JUG
-  3 = MENU          8 = FILTERED
+  1=HOT_GLASS  2=HOT_JUG
+  3=MENU       4=COLD_GLASS
+  5=COLD_JUG   6=AMB_GLASS
+  7=AMB_JUG    8=FILTERED
 
 Счётчики:
-  0 = Total_ml   1 = Filter_ml
-  2 = Cold_ml    4 = Amb_ml
+  0=Total_ml  1=Filter_ml  2=Cold_ml  4=Amb_ml
 """
 import re
-import time
 from core.base_serial import BaseSerial
 
-DEVICE_NAME = "HMI"
-
-# Кнопки
 BUTTONS = {
-    "HOT_GLASS":  1,
-    "HOT_JUG":    2,
-    "MENU":       3,
+    "HOT_GLASS": 1,
+    "HOT_JUG": 2,
+    "MENU": 3,
     "COLD_GLASS": 4,
-    "COLD_JUG":   5,
-    "AMB_GLASS":  6,
-    "AMB_JUG":    7,
-    "FILTERED":   8,
+    "COLD_JUG": 5,
+    "AMB_GLASS": 6,
+    "AMB_JUG": 7,
+    "FILTERED": 8,
 }
 
-# Счётчики
 COUNTERS = {
-    "total":  0,
+    "total": 0,
     "filter": 1,
-    "cold":   2,
-    "amb":    4,
+    "cold": 2,
+    "amb": 4,
 }
 
 
 class HmiSerial(BaseSerial):
     DEVICE_NAME = "HMI"
 
-    # ── кнопки ──────────────────────────────────────────────────────
-    def press(self, button_id: int, duration_ms: int = 1000) -> str | None:
-        """press <id> <duration_ms>"""
+    def press(self, button_id: int, duration_ms: int = 1000):
         return self.send_command(f"press {button_id} {duration_ms}")
 
-    def press_named(self, name: str, duration_ms: int = 1000) -> str | None:
-        """press по имени кнопки: HOT_JUG, COLD_GLASS и т.д."""
+    def press_named(self, name: str, duration_ms: int = 1000):
         bid = BUTTONS.get(name.upper())
         if bid is None:
             self._log(f"[ERROR] Unknown button name: {name}")
             return None
         return self.press(bid, duration_ms)
 
-    # ── счётчики ─────────────────────────────────────────────────────
-    def get_counter(self, counter: str | int) -> float | None:
-        """
-        get_counter <id>
-        Ответ: "COUNTERS: SET [00] Total_ml = 1234567" или просто число.
-        Возвращает миллилитры как float.
-        """
+    def get_counter(self, counter):
         cid = COUNTERS.get(str(counter).lower(), counter)
         resp = self.send_command(f"get_counter {cid}")
+        return self._parse_counter_value(resp)
+
+    @staticmethod
+    def _parse_counter_value(resp):
+        """
+        Parse counter value from a response like:
+          'get_counter 9\n[09] FilterStatus = 1\nCMD EXECUTE OK\n> '
+        Only the number AFTER '=' is the real value. The command echo
+        ('get_counter 9') and the index ('[09]') must be ignored.
+        """
         if resp is None:
             return None
-        # ищем число после "=" или просто первое число
-        m = re.search(r'=\s*([\d]+)', resp)
-        if m:
-            return float(m.group(1))
-        for part in resp.split():
-            try:
-                return float(part)
-            except ValueError:
-                continue
-        self._log(f"[WARN] Cannot parse counter from: {resp!r}")
-        return None
+        # take the value after '=' on the last line that has one
+        last = None
+        for line in resp.splitlines():
+            m = re.search(r'=\s*(-?\d+)', line)
+            if m:
+                last = float(m.group(1))
+        return last
 
-    def reset_counter(self, counter: str | int, value: int = 0) -> str | None:
-        """set_counter <id> <value>"""
+    def reset_counter(self, counter, value: int = 0):
         cid = COUNTERS.get(str(counter).lower(), counter)
         return self.send_command(f"set_counter {cid} {value}")
 
     def get_all_counters(self) -> dict:
-        """Читает все 4 счётчика, возвращает dict в мл."""
-        result = {}
-        for name, cid in COUNTERS.items():
-            result[name] = self.get_counter(cid)
-        return result
+        return {name: self.get_counter(cid) for name, cid in COUNTERS.items()}
 
-    # ── температура ──────────────────────────────────────────────────
-    def get_temp(self) -> str | None:
+    def get_temp(self):
         return self.send_command("get_temp")
 
-    # ── параметры ────────────────────────────────────────────────────
-    def get_param(self, param_id: int | str = "") -> str | None:
+    def get_param(self, param_id=""):
         return self.send_command(f"get_param {param_id}".strip())
 
-    def set_param(self, param_id: int, value) -> str | None:
+    def set_param(self, param_id: int, value):
         return self.send_command(f"set_param {param_id} {value}")
 
-    # ── прочее ───────────────────────────────────────────────────────
-    def get_error(self) -> str | None:
+    def get_error(self):
         return self.send_command("get_error")
 
-    def get_rtc(self) -> str | None:
+    def get_rtc(self):
         return self.send_command("get_rtc")
 
-    def get_info(self) -> str | None:
+    def get_info(self):
         return self.send_command("info")

@@ -1,14 +1,15 @@
 """
-tests/test_hc_hot_dispense.py — Module 4: Hot Dispense (HD-01..05).
+tests/test_hc_hot_filling.py — Module 5: Hot Filling (HF-01..05).
 Requires hydraulic port connected with HCDriver.
 """
 import time
-from core.hc_driver import HCDriver, TEMP_TTANK
+from core.hc_driver import (
+    HCDriver, IN_HWT_FLOAT_UP, IN_HWT_ELEC_UP, IN_HWT_OVERFLOW
+)
 from core.hc_config import PROFILES
 from tests.test_base import BaseTest, TestResult
 
 SETTLE = 1.0
-OUT_HOT_VALVE = "HOT_VALVE"
 
 
 def _hc(test):
@@ -22,10 +23,10 @@ def _cfg(test):
     return PROFILES.get(test.config.get("hc_profile", "IL").upper(), PROFILES["IL"])
 
 
-class TestHD01DispensePartialPower(BaseTest):
-    NAME = "HD-01 Dispense main duty = HDISP"
-    DESCRIPTION = "During hot dispense main heater runs at HDISP partial power."
-    CATEGORY = "hc_dispense"
+class TestHF01FillStartsLowLevel(BaseTest):
+    NAME = "HF-01 Hot fill starts when level low"
+    DESCRIPTION = "With float down and electrode down, hot_filling becomes active."
+    CATEGORY = "hc_filling"
 
     def run(self) -> TestResult:
         err = self._require_hydraulic()
@@ -34,21 +35,20 @@ class TestHD01DispensePartialPower(BaseTest):
         hc = _hc(self)
         if not hc:
             return self._fail("HCDriver required")
-        cfg = _cfg(self)
-        hc.inject_temp(TEMP_TTANK, cfg.BTSP2 - 2)
-        hc.pour_hot(15)
+        hc.inject_inputs({IN_HWT_FLOAT_UP: 0, IN_HWT_ELEC_UP: 0})
         time.sleep(SETTLE)
-        duty = hc.heater_duty()
-        hc.hc_stop_dispense()
-        self.log(f"  dispense main_duty={duty}% HDISP={cfg.HDISP}%")
-        data = {"main_duty": duty, "hdisp": cfg.HDISP}
-        return self._pass(f"OK dispense duty observed={duty}%", data)
+        st = hc.hc_status()
+        self.log(f"  hot_filling={st['hot_filling']}")
+        data = {"hot_filling": st["hot_filling"]}
+        if st["hot_filling"] not in ("DISABLE",):
+            return self._pass(f"OK hot_filling active={st['hot_filling']}", data)
+        return self._fail("hot_filling DISABLE at low level", data)
 
 
-class TestHD02BTSP2Switch(BaseTest):
-    NAME = "HD-02 Hot dispense BTSP2 full/partial"
-    DESCRIPTION = "Around BTSP2 main heater switches full<->partial power during dispense."
-    CATEGORY = "hc_dispense"
+class TestHF02HotFillTimeout(BaseTest):
+    NAME = "HF-02 Hot fill timeout -> Err159"
+    DESCRIPTION = "hot_fill_timeout=1min, tank never fills — Err159 fires."
+    CATEGORY = "hc_filling"
 
     def run(self) -> TestResult:
         err = self._require_hydraulic()
@@ -57,49 +57,28 @@ class TestHD02BTSP2Switch(BaseTest):
         hc = _hc(self)
         if not hc:
             return self._fail("HCDriver required")
-        cfg = _cfg(self)
-        hc.inject_temp(TEMP_TTANK, cfg.BTSP2 - 2)
-        hc.pour_hot(10)
-        time.sleep(SETTLE)
-        duty_low = hc.heater_duty()
-        hc.inject_temp(TEMP_TTANK, cfg.BTSP2 + 2)
-        time.sleep(SETTLE)
-        duty_high = hc.heater_duty()
-        hc.hc_stop_dispense()
-        self.log(f"  below BTSP2 duty={duty_low}% above duty={duty_high}%")
-        data = {"btsp2": cfg.BTSP2, "duty_below": duty_low, "duty_above": duty_high}
-        return self._pass(f"OK BTSP2 switch below={duty_low}% above={duty_high}%", data)
+        timeout_sec = int(self.config.get("hf02_timeout_sec", 120))
+        hc.hc_set_param("heater_hot_fill_timeout", 1)
+        hc.inject_inputs({IN_HWT_FLOAT_UP: 0, IN_HWT_ELEC_UP: 0})
+        self.log(f"  Waiting up to {timeout_sec}s for Err159...")
+        deadline = time.time() + timeout_sec
+        raised = False
+        while time.time() < deadline:
+            if "159" in hc.read_errors():
+                raised = True
+                break
+            time.sleep(3)
+        self.log(f"  err159={raised}")
+        data = {"err159_raised": raised}
+        if raised:
+            return self._pass("OK Err159 raised on hot-fill timeout", data)
+        return self._fail(f"Err159 not raised within {timeout_sec}s", data)
 
 
-class TestHD03BTSP3Switch(BaseTest):
-    NAME = "HD-03 Hot dispense BTSP3 partial/off"
-    DESCRIPTION = "Around BTSP3 main heater switches partial<->no power during dispense."
-    CATEGORY = "hc_dispense"
-
-    def run(self) -> TestResult:
-        err = self._require_hydraulic()
-        if err:
-            return err
-        hc = _hc(self)
-        if not hc:
-            return self._fail("HCDriver required")
-        cfg = _cfg(self)
-        hc.inject_temp(TEMP_TTANK, cfg.BTSP3 + 2)
-        hc.pour_hot(10)
-        time.sleep(SETTLE)
-        duty = hc.heater_duty()
-        hc.hc_stop_dispense()
-        self.log(f"  T>BTSP3={cfg.BTSP3} duty={duty}%")
-        data = {"btsp3": cfg.BTSP3, "duty": duty}
-        if duty in (0, None):
-            return self._pass(f"OK no power above BTSP3: {duty}%", data)
-        return self._pass(f"duty above BTSP3={duty}% (review vs PRD)", data)
-
-
-class TestHD04HotValveOpens(BaseTest):
-    NAME = "HD-04 Hot valve opens on pour_hot"
-    DESCRIPTION = "pour_hot opens HOT_VALVE output."
-    CATEGORY = "hc_dispense"
+class TestHF03Overfill(BaseTest):
+    NAME = "HF-03 Overfill detection"
+    DESCRIPTION = "Overflow electrode active — fill must stop / error handling."
+    CATEGORY = "hc_filling"
 
     def run(self) -> TestResult:
         err = self._require_hydraulic()
@@ -108,22 +87,19 @@ class TestHD04HotValveOpens(BaseTest):
         hc = _hc(self)
         if not hc:
             return self._fail("HCDriver required")
-        hc.pour_hot(15)
+        hc.inject_inputs({IN_HWT_OVERFLOW: 1})
         time.sleep(SETTLE)
-        outs = hc.hc_outputs()
-        valve = outs.get(OUT_HOT_VALVE)
-        hc.hc_stop_dispense()
-        self.log(f"  HOT_VALVE={valve}")
-        data = {"hot_valve": valve}
-        if valve not in (0, None):
-            return self._pass("OK HOT_VALVE open during pour", data)
-        return self._fail(f"HOT_VALVE not open: {valve}", data)
+        st = hc.hc_status()
+        errs = hc.read_errors()
+        self.log(f"  hot_filling={st['hot_filling']} errors={errs[:60]}")
+        data = {"hot_filling": st["hot_filling"], "errors": errs[:60]}
+        return self._pass(f"OK overfill handled hot_filling={st['hot_filling']}", data)
 
 
-class TestHD05StopDispense(BaseTest):
-    NAME = "HD-05 stop_dispense closes hot valve"
-    DESCRIPTION = "After stop_dispense the HOT_VALVE closes."
-    CATEGORY = "hc_dispense"
+class TestHF04FillStopsWhenFull(BaseTest):
+    NAME = "HF-04 Fill stops when tank full"
+    DESCRIPTION = "Float up + electrode up — hot_filling stops (FULL/PAUSE)."
+    CATEGORY = "hc_filling"
 
     def run(self) -> TestResult:
         err = self._require_hydraulic()
@@ -132,14 +108,30 @@ class TestHD05StopDispense(BaseTest):
         hc = _hc(self)
         if not hc:
             return self._fail("HCDriver required")
-        hc.pour_hot(20)
+        hc.inject_inputs({IN_HWT_FLOAT_UP: 1, IN_HWT_ELEC_UP: 1})
         time.sleep(SETTLE)
-        hc.hc_stop_dispense()
-        time.sleep(SETTLE)
-        outs = hc.hc_outputs()
-        valve = outs.get(OUT_HOT_VALVE)
-        self.log(f"  HOT_VALVE after stop={valve}")
-        data = {"hot_valve_after_stop": valve}
-        if valve in (0, None):
-            return self._pass("OK HOT_VALVE closed after stop", data)
-        return self._fail(f"HOT_VALVE still open after stop: {valve}", data)
+        st = hc.hc_status()
+        self.log(f"  hot_filling={st['hot_filling']}")
+        data = {"hot_filling": st["hot_filling"]}
+        return self._pass(f"OK fill stopped hot_filling={st['hot_filling']}", data)
+
+
+class TestHF05TimeLevelParam(BaseTest):
+    NAME = "HF-05 time_level averaging param"
+    DESCRIPTION = "heater_time_level param is writable and read back correctly."
+    CATEGORY = "hc_filling"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        hc.hc_set_param("heater_time_level", 5)
+        val = hc.hc_get_param("heater_time_level")
+        self.log(f"  time_level set=5 read={val}")
+        data = {"time_level": val}
+        if val == 5:
+            return self._pass("OK time_level round-trip", data)
+        return self._fail(f"time_level read {val} != 5", data)

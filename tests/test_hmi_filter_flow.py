@@ -1,9 +1,8 @@
 """
 tests/test_hmi_filter_flow.py — HMI Filter Replacement Flow.
 Verifies FilterStatus transitions and FilterMinutes counter.
-From logs: COUNTERS SET [09] FilterStatus = 0/1, [06] FilterMinutes increments.
+Uses the HMI counter parser (value after '='), not the command echo.
 """
-import re
 from tests.test_base import BaseTest, TestResult
 
 
@@ -16,17 +15,14 @@ class TestFilterMinutesIncrement(BaseTest):
         err = self._require_hmi()
         if err:
             return err
-        resp = self.hmi.send_command("get_counter 6")
-        self.log(f"  FilterMinutes raw={resp}")
-        data = {"response": resp}
-        if resp is None:
-            return self._fail("get_counter 6 read None", data)
-        m = re.search(r'(\d+)', resp)
-        if m:
-            val = int(m.group(1))
-            data["filter_minutes"] = val
-            return self._pass(f"OK FilterMinutes={val}", data)
-        return self._fail(f"Could not parse FilterMinutes from {resp}", data)
+        val = self.hmi.get_counter(6)
+        self.log(f"  FilterMinutes={val}")
+        data = {"filter_minutes": val}
+        if val is None:
+            return self._fail("Could not parse FilterMinutes", data)
+        if val >= 0:
+            return self._pass(f"OK FilterMinutes={int(val)}", data)
+        return self._fail(f"FilterMinutes negative: {val}", data)
 
 
 class TestFilterStatusReadable(BaseTest):
@@ -38,19 +34,14 @@ class TestFilterStatusReadable(BaseTest):
         err = self._require_hmi()
         if err:
             return err
-        resp = self.hmi.send_command("get_counter 9")
-        self.log(f"  FilterStatus raw={resp}")
-        data = {"response": resp}
-        if resp is None:
-            return self._fail("get_counter 9 read None", data)
-        m = re.search(r'(\d+)', resp)
-        if m:
-            val = int(m.group(1))
-            data["filter_status"] = val
-            if val in (0, 1):
-                return self._pass(f"OK FilterStatus={val}", data)
-            return self._fail(f"FilterStatus={val} not in (0,1)", data)
-        return self._fail(f"Could not parse FilterStatus from {resp}", data)
+        val = self.hmi.get_counter(9)
+        self.log(f"  FilterStatus={val}")
+        data = {"filter_status": val}
+        if val is None:
+            return self._fail("Could not parse FilterStatus", data)
+        if int(val) in (0, 1):
+            return self._pass(f"OK FilterStatus={int(val)}", data)
+        return self._fail(f"FilterStatus={int(val)} not in (0,1)", data)
 
 
 class TestFilterLifeTimeParam(BaseTest):
@@ -63,8 +54,10 @@ class TestFilterLifeTimeParam(BaseTest):
         if err:
             return err
         resp = self.hmi.get_param(14)
-        self.log(f"  FilterLifeTime raw={resp}")
-        data = {"response": resp}
-        if resp is None:
-            return self._fail("get_param 14 read None", data)
-        return self._pass("OK FilterLifeTime readable", data)
+        self.log(f"  FilterLifeTime raw len={len(resp) if resp else 0}")
+        data = {"has_response": bool(resp)}
+        if resp and "FilterLifeTime" in resp:
+            return self._pass("OK FilterLifeTime readable", data)
+        if resp:
+            return self._pass("OK param 14 response received", data)
+        return self._fail("get_param 14 read None", data)

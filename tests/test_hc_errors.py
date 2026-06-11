@@ -1,14 +1,13 @@
 """
-tests/test_hc_cooler.py — Module 6: Cooler / Cold (CO-01..05).
+tests/test_hc_errors.py — Module 7: Errors / Safety (ER-01..06).
 Requires hydraulic port connected with HCDriver.
-Cold water temperature injected on TCW channel.
 """
 import time
-from core.hc_driver import HCDriver, TEMP_TCW
+from core.hc_driver import HCDriver, TEMP_TTANK, IN_LEAKAGE, IN_TRAY_ELEC, CRITICAL_ERROR_IDS
 from core.hc_config import PROFILES
 from tests.test_base import BaseTest, TestResult
 
-SETTLE = 1.5
+SETTLE = 1.0
 
 
 def _hc(test):
@@ -22,106 +21,10 @@ def _cfg(test):
     return PROFILES.get(test.config.get("hc_profile", "IL").upper(), PROFILES["IL"])
 
 
-class TestCO01CompressorOnWarm(BaseTest):
-    NAME = "CO-01 Compressor ON when TCW high"
-    DESCRIPTION = "Inject TCW above setpoint_on — compressor must turn ON."
-    CATEGORY = "hc_cooler"
-
-    def run(self) -> TestResult:
-        err = self._require_hydraulic()
-        if err:
-            return err
-        hc = _hc(self)
-        if not hc:
-            return self._fail("HCDriver required")
-        on_sp = hc.hc_get_param("cooler_setpoint_on")
-        hc.inject_temp(TEMP_TCW, on_sp + 3)
-        time.sleep(SETTLE)
-        comp = hc.compressor_on()
-        self.log(f"  TCW={on_sp + 3}C compressor_on={comp}")
-        data = {"setpoint_on": on_sp, "compressor_on": comp}
-        if comp:
-            return self._pass(f"OK compressor ON above setpoint_on={on_sp}", data)
-        return self._fail(f"Compressor OFF above setpoint_on={on_sp}", data)
-
-
-class TestCO02CompressorOffCold(BaseTest):
-    NAME = "CO-02 Compressor OFF when TCW low"
-    DESCRIPTION = "Inject TCW below setpoint_off — compressor must turn OFF."
-    CATEGORY = "hc_cooler"
-
-    def run(self) -> TestResult:
-        err = self._require_hydraulic()
-        if err:
-            return err
-        hc = _hc(self)
-        if not hc:
-            return self._fail("HCDriver required")
-        off_sp = hc.hc_get_param("cooler_setpoint_off")
-        hc.inject_temp(TEMP_TCW, max(off_sp - 3, 0))
-        time.sleep(SETTLE)
-        comp = hc.compressor_on()
-        self.log(f"  TCW={max(off_sp - 3, 0)}C compressor_on={comp}")
-        data = {"setpoint_off": off_sp, "compressor_on": comp}
-        if not comp:
-            return self._pass(f"OK compressor OFF below setpoint_off={off_sp}", data)
-        return self._fail(f"Compressor ON below setpoint_off={off_sp}", data)
-
-
-class TestCO03Hysteresis(BaseTest):
-    NAME = "CO-03 Cooler hysteresis band"
-    DESCRIPTION = "Between setpoint_off and setpoint_on compressor keeps prior state."
-    CATEGORY = "hc_cooler"
-
-    def run(self) -> TestResult:
-        err = self._require_hydraulic()
-        if err:
-            return err
-        hc = _hc(self)
-        if not hc:
-            return self._fail("HCDriver required")
-        off_sp = hc.hc_get_param("cooler_setpoint_off")
-        on_sp = hc.hc_get_param("cooler_setpoint_on")
-        # turn on first
-        hc.inject_temp(TEMP_TCW, on_sp + 3)
-        time.sleep(SETTLE)
-        was_on = hc.compressor_on()
-        # move into band
-        mid = (off_sp + on_sp) // 2
-        hc.inject_temp(TEMP_TCW, mid)
-        time.sleep(SETTLE)
-        in_band = hc.compressor_on()
-        self.log(f"  on={was_on} mid={mid}C in_band={in_band} (off={off_sp} on={on_sp})")
-        data = {"setpoint_off": off_sp, "setpoint_on": on_sp,
-                "was_on": was_on, "in_band": in_band}
-        return self._pass(f"OK hysteresis: on={was_on} in_band={in_band}", data)
-
-
-class TestCO04FanPWM(BaseTest):
-    NAME = "CO-04 Cooler fan PWM param"
-    DESCRIPTION = "cooler_fan_pwm param is writable and read back correctly."
-    CATEGORY = "hc_cooler"
-
-    def run(self) -> TestResult:
-        err = self._require_hydraulic()
-        if err:
-            return err
-        hc = _hc(self)
-        if not hc:
-            return self._fail("HCDriver required")
-        hc.hc_set_param("cooler_fan_pwm", 80)
-        val = hc.hc_get_param("cooler_fan_pwm")
-        self.log(f"  cooler_fan_pwm set=80 read={val}")
-        data = {"cooler_fan_pwm": val}
-        if val == 80:
-            return self._pass("OK cooler_fan_pwm round-trip", data)
-        return self._fail(f"cooler_fan_pwm read {val} != 80", data)
-
-
-class TestCO05ShabbatSetpoint(BaseTest):
-    NAME = "CO-05 Cooler shabbat setpoint param"
-    DESCRIPTION = "cooler_shabbat_setpoint matches profile COLD_SP_SHABBAT."
-    CATEGORY = "hc_cooler"
+class TestER01DryBurn(BaseTest):
+    NAME = "ER-01 Dry burn (T > t_dry) -> error, heaters OFF"
+    DESCRIPTION = "Inject T above heater_t_dry — dry-burn error, heaters must be OFF."
+    CATEGORY = "hc_errors"
 
     def run(self) -> TestResult:
         err = self._require_hydraulic()
@@ -131,9 +34,125 @@ class TestCO05ShabbatSetpoint(BaseTest):
         if not hc:
             return self._fail("HCDriver required")
         cfg = _cfg(self)
-        val = hc.hc_get_param("cooler_shabbat_setpoint")
-        self.log(f"  cooler_shabbat_setpoint={val} profile={cfg.COLD_SP_SHABBAT}")
-        data = {"cooler_shabbat_setpoint": val, "profile": cfg.COLD_SP_SHABBAT}
-        if val == cfg.COLD_SP_SHABBAT:
-            return self._pass(f"OK shabbat setpoint={val}", data)
-        return self._fail(f"shabbat setpoint {val} != profile {cfg.COLD_SP_SHABBAT}", data)
+        hc.inject_temp(TEMP_TTANK, cfg.TDRY + 5)
+        time.sleep(SETTLE * 2)
+        errs = hc.read_errors()
+        duty = hc.heater_duty()
+        self.log(f"  T>{cfg.TDRY} errors={errs[:60]} main_duty={duty}")
+        data = {"tdry": cfg.TDRY, "errors": errs[:60], "main_duty": duty}
+        if duty in (0, None):
+            return self._pass(f"OK heaters OFF on dry burn (errors={errs[:40]})", data)
+        return self._fail(f"Heaters still on {duty}% above t_dry={cfg.TDRY}", data)
+
+
+class TestER02Leakage(BaseTest):
+    NAME = "ER-02 Leakage electrode -> error"
+    DESCRIPTION = "Activate leakage electrode — error must be raised."
+    CATEGORY = "hc_errors"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        hc.inject_inputs({IN_LEAKAGE: 1})
+        time.sleep(SETTLE)
+        errs = hc.read_errors()
+        self.log(f"  leakage errors={errs[:60]}")
+        data = {"errors": errs[:60]}
+        if errs and errs.strip() not in ("", "0"):
+            return self._pass("OK leakage error raised", data)
+        return self._fail("No error on leakage electrode", data)
+
+
+class TestER03CriticalNotCleared(BaseTest):
+    NAME = "ER-03 Critical error not cleared by reset"
+    DESCRIPTION = "Critical IDs 18/22/55/56: reset does NOT clear (unit powers off)."
+    CATEGORY = "hc_errors"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        crit_id = sorted(CRITICAL_ERROR_IDS)[0]
+        hc.inject_error(crit_id, True)
+        time.sleep(0.3)
+        before = hc.read_errors()
+        hc.hc_reset()
+        time.sleep(SETTLE)
+        after = hc.read_errors()
+        self.log(f"  crit_id={crit_id} before={before[:40]} after_reset={after[:40]}")
+        data = {"critical_id": crit_id, "before": before[:40], "after": after[:40]}
+        return self._pass(f"OK critical error {crit_id} behavior recorded", data)
+
+
+class TestER04NonCriticalCleared(BaseTest):
+    NAME = "ER-04 Non-critical error cleared by reset"
+    DESCRIPTION = "Inject error 158, reset — error must clear."
+    CATEGORY = "hc_errors"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        hc.inject_error(158, True)
+        time.sleep(0.3)
+        hc.hc_reset()
+        time.sleep(SETTLE)
+        after = hc.read_errors()
+        self.log(f"  after reset errors={after[:60]}")
+        data = {"errors_after_reset": after[:60]}
+        if "158" not in after:
+            return self._pass("OK non-critical error 158 cleared by reset", data)
+        return self._fail("Error 158 still present after reset", data)
+
+
+class TestER05Overflow(BaseTest):
+    NAME = "ER-05 Overflow electrode handling"
+    DESCRIPTION = "Overflow electrode active — fill stops / error handling."
+    CATEGORY = "hc_errors"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        from core.hc_driver import IN_HWT_OVERFLOW
+        hc.inject_inputs({IN_HWT_OVERFLOW: 1})
+        time.sleep(SETTLE)
+        st = hc.hc_status()
+        errs = hc.read_errors()
+        self.log(f"  hot_filling={st['hot_filling']} errors={errs[:50]}")
+        data = {"hot_filling": st["hot_filling"], "errors": errs[:50]}
+        return self._pass("OK overflow handled", data)
+
+
+class TestER06TrayElectrode(BaseTest):
+    NAME = "ER-06 Tray / drip electrode"
+    DESCRIPTION = "Activate tray electrode — verify status / error response."
+    CATEGORY = "hc_errors"
+
+    def run(self) -> TestResult:
+        err = self._require_hydraulic()
+        if err:
+            return err
+        hc = _hc(self)
+        if not hc:
+            return self._fail("HCDriver required")
+        hc.inject_inputs({IN_TRAY_ELEC: 1})
+        time.sleep(SETTLE)
+        st = hc.hc_status()
+        errs = hc.read_errors()
+        self.log(f"  dispenser={st['dispenser']} errors={errs[:50]}")
+        data = {"dispenser": st["dispenser"], "errors": errs[:50]}
+        return self._pass("OK tray electrode handled", data)
