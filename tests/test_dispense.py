@@ -41,17 +41,43 @@ def _run_dispense(test: BaseTest, button_id: int,
     if None in (base_total, base_filter, base_type):
         return test._fail("Baseline counter read None (check connection)")
 
-    # ── press + wait ─────────────────────────────────────────────────
+    # ── press + wait (poll until counter stabilizes) ────────────────
     resp = test.hmi.press(button_id, duration_ms)
     if resp is None:
         return test._fail(f"press {button_id} no response")
-    test.log(f"  Waiting {wait_sec}s for dispense...")
-    time.sleep(wait_sec)
+    test.log(f"  Waiting up to {wait_sec}s for dispense to settle...")
 
-    # ── after ────────────────────────────────────────────────────────
-    after_total = test.hmi.get_counter("total")
-    after_filter = test.hmi.get_counter("filter")
-    after_type = test.hmi.get_counter(counter_key)
+    # poll Total until it stops increasing (dispense finished + counted)
+    settle_deadline = time.time() + wait_sec
+    last_total = base_total
+    stable_count = 0
+    while time.time() < settle_deadline:
+        time.sleep(3)
+        now_total = test.hmi.get_counter("total")
+        if now_total is None:
+            continue
+        if now_total == last_total:
+            stable_count += 1
+            if stable_count >= 2 and now_total > base_total:
+                break  # stable and something was dispensed
+        else:
+            stable_count = 0
+            last_total = now_total
+
+    # ── after (with a re-read guard against single-read glitches) ────
+    def _read_counter(key, baseline):
+        v = test.hmi.get_counter(key)
+        # a counter going backwards means a glitched read; try once more
+        if v is not None and v < baseline:
+            test.log(f"  [glitch] {key} read {v} < baseline {baseline}, re-reading")
+            v2 = test.hmi.get_counter(key)
+            if v2 is not None and v2 >= baseline:
+                return v2
+        return v
+
+    after_total = _read_counter("total", base_total)
+    after_filter = _read_counter("filter", base_filter)
+    after_type = _read_counter(counter_key, base_type)
 
     if None in (after_total, after_filter, after_type):
         return test._fail("After-pour counter read None")
