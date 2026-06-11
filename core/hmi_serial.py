@@ -54,25 +54,53 @@ class HmiSerial(BaseSerial):
     def get_counter(self, counter):
         cid = COUNTERS.get(str(counter).lower(), counter)
         resp = self.send_command(f"get_counter {cid}")
-        return self._parse_counter_value(resp)
+        return self._parse_counter_value(resp, cid)
 
     @staticmethod
-    def _parse_counter_value(resp):
+    def _parse_counter_value(resp, cid=None):
         """
-        Parse counter value from a response like:
-          'get_counter 9\n[09] FilterStatus = 1\nCMD EXECUTE OK\n> '
-        Only the number AFTER '=' is the real value. The command echo
-        ('get_counter 9') and the index ('[09]') must be ignored.
+        Parse a counter value from a response like:
+          'get_counter 0\n[00] Total_ml = 1701861037\nCMD EXECUTE OK\n> '
+        The HC/HMI also emits async lines such as
+          'SET [06] FilterMinutes = 6520'
+        which must NOT be mistaken for the requested counter. When cid is
+        given we only accept the line whose index '[NN]' equals cid, and we
+        prefer the direct reply line '[NN] Name = value' over 'SET [NN] ...'.
         """
         if resp is None:
             return None
-        # take the value after '=' on the last line that has one
-        last = None
+
+        want_idx = None
+        if cid is not None:
+            try:
+                want_idx = int(cid)
+            except (TypeError, ValueError):
+                want_idx = None
+
+        direct = None   # '[NN] Name = value'  (the reply we asked for)
+        any_set = None  # 'SET [NN] Name = value' (async update, fallback)
+        fallback = None  # any '= value' line, last resort
+
         for line in resp.splitlines():
-            m = re.search(r'=\s*(-?\d+)', line)
+            m = re.search(r'\[(\d+)\]\s*\w+\s*=\s*(-?\d+)', line)
             if m:
-                last = float(m.group(1))
-        return last
+                idx = int(m.group(1))
+                val = float(m.group(2))
+                if want_idx is None or idx == want_idx:
+                    if line.strip().startswith("SET"):
+                        any_set = val
+                    else:
+                        direct = val
+                continue
+            m2 = re.search(r'=\s*(-?\d+)', line)
+            if m2:
+                fallback = float(m2.group(1))
+
+        if direct is not None:
+            return direct
+        if any_set is not None:
+            return any_set
+        return fallback
 
     def reset_counter(self, counter, value: int = 0):
         cid = COUNTERS.get(str(counter).lower(), counter)

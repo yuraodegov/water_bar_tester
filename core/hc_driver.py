@@ -28,9 +28,9 @@ HEAT_EXTRA = {"EXTRA_HOT", "START_EXTRA_HOT"}
 CRITICAL_ERROR_IDS = {18, 22, 55, 56}
 
 _RE_STATUS = re.compile(
-    r"Common state:\s*(?P<shabbat>\S+)\s+"
+    r"Common:\s*(?P<shabbat>\S+)\s+"
     r"Cooler:\s*(?P<cooler>ON|OFF)\s+"
-    r"Heater:\s*(?P<heater>\S+)\s*\[(?P<stage>\d*)\]\s+"
+    r"Heater:\s*(?P<heater>\S+)\s+"
     r"Dispenser:\s*(?P<dispenser>\S+)\s+"
     r"Hot Filling:\s*(?P<hot_filling>\S+)"
 )
@@ -62,18 +62,22 @@ class HCDriver(BaseSerial):
         return b"".join(chunks).decode("ascii", errors="ignore")
 
     def hc_set_param(self, name: str, value: int) -> None:
-        r = self.hc_cmd(f"set_param={name}={value}")
-        if "New value" in r:
-            return
-        if "must be between" in r:
-            raise ValueError(f"set_param range error '{name}': {r.strip()!r}")
+        for cmd in (f"set_param={name}={value}", f"set_param {name} {value}"):
+            r = self.hc_cmd(cmd, read_for=0.8)
+            if "New value" in r or "CMD EXECUTE OK" in r:
+                return
+            if "must be between" in r or "Not in range" in r:
+                raise ValueError(f"set_param range error '{name}': {r.strip()!r}")
         raise RuntimeError(f"set_param failed '{name}': {r.strip()!r}")
 
     def hc_get_param(self, name: str) -> int:
-        r = self.hc_cmd(f"get_param={name}")
-        for m in _RE_PARAM.finditer(r):
-            if m.group("name") == name:
-                return int(m.group("val"))
+        # device may use 'get_param=name' or 'get_param name'; try both,
+        # and read for longer because the HC spams async log lines.
+        for cmd in (f"get_param={name}", f"get_param {name}"):
+            r = self.hc_cmd(cmd, read_for=0.8)
+            for m in _RE_PARAM.finditer(r):
+                if m.group("name") == name:
+                    return int(m.group("val"))
         raise RuntimeError(f"could not read param '{name}' from: {r.strip()!r}")
 
     def sim_all_on(self) -> None:
@@ -123,11 +127,14 @@ class HCDriver(BaseSerial):
         return d
 
     def hc_temps(self) -> dict:
-        r = self.hc_cmd("get_temp")
-        m = _RE_TEMP.search(r)
-        if not m:
-            raise RuntimeError(f"could not parse get_temp: {r.strip()!r}")
-        return {k: float(v) for k, v in m.groupdict().items()}
+        # retry: HC sometimes returns 'Bad command' when busy with async logs
+        for _ in range(3):
+            r = self.hc_cmd("get_temp", read_for=0.8)
+            m = _RE_TEMP.search(r)
+            if m:
+                return {k: float(v) for k, v in m.groupdict().items()}
+            time.sleep(0.3)
+        raise RuntimeError(f"could not parse get_temp: {r.strip()!r}")
 
     def hc_outputs(self) -> dict:
         return self._parse_outputs(self.hc_cmd("get_io", read_for=0.6))
