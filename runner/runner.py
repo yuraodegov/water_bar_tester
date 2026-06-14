@@ -59,6 +59,8 @@ class TestRunner:
             self.log(f"{'=' * 55}")
             try:
                 inst = cls(self.hmi, self.hydraulic, self.config, self.log)
+                # give long-running tests a way to observe the stop flag
+                inst.stop_check = lambda: self._stop
                 result = inst.run()
             except Exception as e:
                 result = TestResult(name, False, f"Exception: {e}")

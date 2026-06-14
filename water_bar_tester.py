@@ -187,6 +187,12 @@ def run_gui():
             "long_term_cycles": int(cycles_var.get() or 17),
             "long_term_pause_sec": int(pause_var.get() or 300),
             "use_hydraulic": use_hydr_var.get(),
+            # monitor-run parameters
+            "monitor_minutes": float(mon_min_var.get() or 30),
+            "monitor_cycles": int(mon_cyc_var.get() or 0),
+            "monitor_hmi_period": float(mon_hmi_var.get() or 120),
+            "monitor_hc_period": float(mon_hc_var.get() or 60),
+            "monitor_pause": float(mon_pause_var.get() or 30),
         }
 
     def selected_tests():
@@ -252,6 +258,7 @@ def run_gui():
     def _update_run_btn():
         ok = hmi_dev is not None and hmi_dev.is_connected()
         btn_run.configure(state="normal" if ok else "disabled")
+        btn_monitor.configure(state="normal" if ok else "disabled")
 
     # ── manual button press ──────────────────────────────────────────
     def manual_press(btn_id, btn_name):
@@ -265,6 +272,40 @@ def run_gui():
             resp = hmi_dev.press(btn_id, dur)
             root.after(0, lambda: log(f"  -> {resp}", DIM))
         threading.Thread(target=_t, daemon=True).start()
+
+    def run_monitor():
+        # run ONLY the long-term monitor test
+        nonlocal runner
+        if hmi_dev is None:
+            mb.showwarning("Not connected", "Connect HMI first.")
+            return
+        monitor_name = None
+        for name, cls in all_tests.items():
+            if getattr(cls, "CATEGORY", "") == "monitor":
+                monitor_name = name
+                break
+        if monitor_name is None:
+            log("[ERROR] Monitor test not found in tests/.", RED)
+            return
+        btn_run.configure(state="disabled")
+        btn_monitor.configure(state="disabled")
+        btn_stop.configure(state="normal")
+        progress.start(10)
+        log("-" * 50, DIM)
+        log("Starting MONITOR run... (press STOP to finish)", ACCENT)
+
+        cfg = get_config()
+        runner = TestRunner(hmi_dev, hydr_dev, cfg, log_callback=log)
+
+        def _thread():
+            try:
+                results = runner.run([monitor_name])
+                root.after(0, lambda: _on_finish(results))
+            except Exception as exc:
+                msg = f"[FATAL] {exc}"
+                root.after(0, lambda m=msg: log(m, RED))
+                root.after(0, _cleanup)
+        threading.Thread(target=_thread, daemon=True).start()
 
     # ── run / stop ───────────────────────────────────────────────────
     def run_tests():
@@ -316,6 +357,7 @@ def run_gui():
     def _cleanup():
         ok = hmi_dev is not None and hmi_dev.is_connected()
         btn_run.configure(state="normal" if ok else "disabled")
+        btn_monitor.configure(state="normal" if ok else "disabled")
         btn_stop.configure(state="disabled")
         progress.stop()
 
@@ -355,6 +397,10 @@ def run_gui():
                         bg=ACCENT2, fg="white", font=FB, relief="flat",
                         padx=16, pady=5, state="disabled")
     btn_run.pack(side="left", padx=(0, 4))
+    btn_monitor = tk.Button(topbar, text="MONITOR", command=run_monitor,
+                            bg="#1d4ed8", fg="white", font=FB, relief="flat",
+                            padx=12, pady=5, state="disabled")
+    btn_monitor.pack(side="left", padx=(0, 4))
     btn_stop = tk.Button(topbar, text="STOP", command=stop_tests,
                          bg="#7f1d1d", fg="#fca5a5", font=FB, relief="flat",
                          padx=12, pady=5, state="disabled")
@@ -489,6 +535,19 @@ def run_gui():
     lrow("Filter max (L)", fmax_var)
     lrow("Long cycles", cycles_var)
     lrow("Long pause (s)", pause_var)
+
+    # Monitor-run parameters
+    sec("MONITOR PARAMETERS")
+    mon_min_var = tk.StringVar(value="30")
+    mon_cyc_var = tk.StringVar(value="0")
+    mon_hmi_var = tk.StringVar(value="120")
+    mon_hc_var = tk.StringVar(value="60")
+    mon_pause_var = tk.StringVar(value="30")
+    lrow("Run minutes (0=inf)", mon_min_var)
+    lrow("Max cycles (0=inf)", mon_cyc_var)
+    lrow("HMI poll (s)", mon_hmi_var)
+    lrow("HC poll (s)", mon_hc_var)
+    lrow("Pause (s)", mon_pause_var)
 
     # Manual buttons
     sec("MANUAL BUTTONS")

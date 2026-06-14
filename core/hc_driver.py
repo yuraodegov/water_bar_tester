@@ -46,20 +46,48 @@ _RE_PARAM = re.compile(r"(?:parameter\s*\[\d+\]:\s*)?(?P<name>\w+)\s*=\s*(?P<val
 class HCDriver(BaseSerial):
     DEVICE_NAME = "HC"
 
-    def hc_cmd(self, line: str, settle: float = 0.15, read_for: float = 0.5) -> str:
+    def connect(self):
+        super().connect()
+        # send a throwaway warm-up command: the HC eats the first command
+        # after an idle period and answers it with 'Bad command'
+        try:
+            self.hc_cmd("status", retries=1)
+        except Exception:
+            pass
+
+    def hc_cmd(self, line: str, settle: float = 0.2, read_for: float = 1.2,
+               retries: int = 3) -> str:
+        """
+        Send a command to the HC and read the full response.
+
+        The HC often answers the first command after an idle period with
+        'Bad command' (warm-up), and streams long replies like 'status' in
+        several chunks over ~1 s. So we retry on empty/'Bad command' and
+        keep reading until the line goes quiet for a short gap.
+        """
         if not self.is_connected():
             raise RuntimeError("HC not connected")
-        self.ser.reset_input_buffer()
-        self.ser.write((line + "\r\n").encode("ascii"))
-        time.sleep(settle)
-        deadline = time.time() + read_for
-        chunks = []
-        while time.time() < deadline:
-            data = self.ser.read(4096)
-            if data:
-                chunks.append(data)
-                deadline = time.time() + 0.08
-        return b"".join(chunks).decode("ascii", errors="ignore")
+
+        last = ""
+        for attempt in range(retries):
+            self.ser.reset_input_buffer()
+            self.ser.write((line + "\r\n").encode("ascii"))
+            time.sleep(settle)
+            deadline = time.time() + read_for
+            chunks = []
+            while time.time() < deadline:
+                data = self.ser.read(4096)
+                if data:
+                    chunks.append(data)
+                    # extend the window while data keeps arriving
+                    deadline = time.time() + 0.25
+            last = b"".join(chunks).decode("ascii", errors="ignore")
+            text = last.strip()
+            # retry on empty or warm-up 'Bad command'
+            if text and "Bad command" not in text:
+                return last
+            time.sleep(0.3)
+        return last
 
     def hc_set_param(self, name: str, value: int) -> None:
         for cmd in (f"set_param={name}={value}", f"set_param {name} {value}"):
@@ -118,7 +146,7 @@ class HCDriver(BaseSerial):
         return self.hc_cmd("error")
 
     def hc_status(self) -> dict:
-        r = self.hc_cmd("status", read_for=0.6)
+        r = self.hc_cmd("status", read_for=1.5)
         m = _RE_STATUS.search(r)
         if not m:
             raise RuntimeError(f"could not parse status: {r.strip()!r}")
@@ -127,17 +155,24 @@ class HCDriver(BaseSerial):
         return d
 
     def hc_temps(self) -> dict:
-        # retry: HC sometimes returns 'Bad command' when busy with async logs
-        for _ in range(3):
-            r = self.hc_cmd("get_temp", read_for=0.8)
-            m = _RE_TEMP.search(r)
-            if m:
-                return {k: float(v) for k, v in m.groupdict().items()}
-            time.sleep(0.3)
+        # hc_cmd already retries on 'Bad command'; parse temps from status
+        # if get_temp itself is unavailable on this firmware
+        r = self.hc_cmd("get_temp", read_for=1.0)
+        m = _RE_TEMP.search(r)
+        if m:
+            return {k: float(v) for k, v in m.groupdict().items()}
+        # fallback: TempTank/TempBoost/CWTtemp line inside status
+        r2 = self.hc_cmd("status", read_for=1.5)
+        m2 = re.search(
+            r"TempTank:\s*(\d+)\s+TempBoost:\s*(\d+)\s+CWTtemp:\s*(\d+)", r2)
+        if m2:
+            return {"ttank": float(m2.group(1)),
+                    "tboost": float(m2.group(2)),
+                    "tcw": float(m2.group(3))}
         raise RuntimeError(f"could not parse get_temp: {r.strip()!r}")
 
     def hc_outputs(self) -> dict:
-        return self._parse_outputs(self.hc_cmd("get_io", read_for=0.6))
+        return self._parse_outputs(self.hc_cmd("get_io", read_for=1.0))
 
     def heater_duty(self):
         return self.hc_outputs().get(OUT_MAIN_HEATER)
