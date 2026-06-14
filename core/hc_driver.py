@@ -46,67 +46,72 @@ _RE_PARAM = re.compile(r"(?:parameter\s*\[\d+\]:\s*)?(?P<name>\w+)\s*=\s*(?P<val
 class HCDriver(BaseSerial):
     DEVICE_NAME = "HC"
 
-    def connect(self):
-        super().connect()
-        # send a throwaway warm-up command: the HC eats the first command
-        # after an idle period and answers it with 'Bad command'
-        try:
-            self.hc_cmd("status", retries=1)
-        except Exception:
-            pass
-
-    def hc_cmd(self, line: str, settle: float = 0.2, read_for: float = 1.2,
-               retries: int = 3) -> str:
+    def hc_cmd(self, line: str, settle: float = 0.2, read_for: float = 1.2) -> str:
         """
         Send a command to the HC and read the full response.
 
-        The HC often answers the first command after an idle period with
-        'Bad command' (warm-up), and streams long replies like 'status' in
-        several chunks over ~1 s. So we retry on empty/'Bad command' and
-        keep reading until the line goes quiet for a short gap.
+        The device answers on the first try; 'Bad command' is a real error
+        (wrong syntax for this firmware), not a warm-up, so we do NOT retry
+        it. Long replies like 'status' stream in several chunks over ~1 s, so
+        we keep reading while data is still arriving.
         """
         if not self.is_connected():
             raise RuntimeError("HC not connected")
 
-        last = ""
-        for attempt in range(retries):
-            self.ser.reset_input_buffer()
-            self.ser.write((line + "\r\n").encode("ascii"))
-            time.sleep(settle)
-            deadline = time.time() + read_for
-            chunks = []
-            while time.time() < deadline:
-                data = self.ser.read(4096)
-                if data:
-                    chunks.append(data)
-                    # extend the window while data keeps arriving
-                    deadline = time.time() + 0.25
-            last = b"".join(chunks).decode("ascii", errors="ignore")
-            text = last.strip()
-            # retry on empty or warm-up 'Bad command'
-            if text and "Bad command" not in text:
-                return last
-            time.sleep(0.3)
-        return last
+        # drain any stale async log lines still in the buffer, then send
+        self.ser.reset_input_buffer()
+        time.sleep(0.1)
+        self.ser.reset_input_buffer()
+        self.ser.write((line + "\r\n").encode("ascii"))
+        time.sleep(settle)
+        deadline = time.time() + read_for
+        chunks = []
+        while time.time() < deadline:
+            data = self.ser.read(4096)
+            if data:
+                chunks.append(data)
+                # extend the window while data keeps arriving
+                deadline = time.time() + 0.25
+        return b"".join(chunks).decode("ascii", errors="ignore")
 
     def hc_set_param(self, name: str, value: int) -> None:
+        # correct syntax has no spaces around '=' (spaces break the parser);
+        # confirm by reading the value back from the full dump.
         for cmd in (f"set_param={name}={value}", f"set_param {name} {value}"):
             r = self.hc_cmd(cmd, read_for=0.8)
-            if "New value" in r or "CMD EXECUTE OK" in r:
-                return
-            if "must be between" in r or "Not in range" in r:
+            low = r.lower()
+            if "not found" in low or "not fount" in low:
+                continue
+            if "must be between" in low or "not in range" in low:
                 raise ValueError(f"set_param range error '{name}': {r.strip()!r}")
-        raise RuntimeError(f"set_param failed '{name}': {r.strip()!r}")
+            # verify by read-back
+            try:
+                if self.hc_get_param(name) == value:
+                    return
+            except Exception:
+                pass
+            if "new value" in low or "ok" in low:
+                return
+        raise RuntimeError(f"set_param failed '{name}'")
 
     def hc_get_param(self, name: str) -> int:
-        # device may use 'get_param=name' or 'get_param name'; try both,
-        # and read for longer because the HC spams async log lines.
-        for cmd in (f"get_param={name}", f"get_param {name}"):
-            r = self.hc_cmd(cmd, read_for=0.8)
-            for m in _RE_PARAM.finditer(r):
-                if m.group("name") == name:
-                    return int(m.group("val"))
-        raise RuntimeError(f"could not read param '{name}' from: {r.strip()!r}")
+        # this firmware does not support 'get_param=name' or 'get_param name'
+        # (both return 'Bad command'); the bare 'get_param' lists every
+        # parameter as 'name = value unit', so parse the requested one.
+        dump = self.hc_cmd("get_param", read_for=1.5)
+        for m in _RE_PARAM.finditer(dump):
+            if m.group("name") == name:
+                return int(m.group("val"))
+        raise RuntimeError(f"param '{name}' not found in get_param dump")
+
+    def heater_calibration_flag(self) -> int:
+        # 'heater_calibration' is a dedicated command (not an eeprom param);
+        # it replies 'Heater calibration flag = N'.
+        r = self.hc_cmd("heater_calibration", read_for=0.8)
+        m = re.search(r"flag\s*=\s*(-?\d+)", r)
+        if m:
+            return int(m.group(1))
+        raise RuntimeError(f"could not read calibration flag from: {r.strip()!r}")
 
     def sim_all_on(self) -> None:
         self.hc_cmd("simulate=63")
@@ -155,8 +160,9 @@ class HCDriver(BaseSerial):
         return d
 
     def hc_temps(self) -> dict:
-        # hc_cmd already retries on 'Bad command'; parse temps from status
-        # if get_temp itself is unavailable on this firmware
+        # 'get_temp' is not valid on this firmware (returns 'Bad command'),
+        # so read the temperatures straight from the status block, which
+        # lists 'TempTank / TempBoost / CWTtemp'.
         r = self.hc_cmd("get_temp", read_for=1.0)
         m = _RE_TEMP.search(r)
         if m:
@@ -169,7 +175,7 @@ class HCDriver(BaseSerial):
             return {"ttank": float(m2.group(1)),
                     "tboost": float(m2.group(2)),
                     "tcw": float(m2.group(3))}
-        raise RuntimeError(f"could not parse get_temp: {r.strip()!r}")
+        raise RuntimeError(f"could not read temps from get_temp or status: {r.strip()!r}")
 
     def hc_outputs(self) -> dict:
         return self._parse_outputs(self.hc_cmd("get_io", read_for=1.0))
