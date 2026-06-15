@@ -1,13 +1,13 @@
 """
 tests/test_filter_counter.py
-Проверяет счётчик фильтра Filter_ml [01].
+Checks the filter counter Filter_ml [01].
 """
 from tests.test_base import BaseTest, TestResult
 
 
 class TestFilterCounter(BaseTest):
     NAME = "Filter Counter"
-    DESCRIPTION = "Проверяет счётчик Filter_ml — должен соответствовать цели."
+    DESCRIPTION = "Checks the Filter_ml counter - it must match the target."
     CATEGORY = "param"
 
     def run(self) -> TestResult:
