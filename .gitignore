@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 .vscode/
 reports/
+
+build/
+dist/
+*.spec
+__pycache__/
+venv/
