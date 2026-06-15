@@ -61,7 +61,9 @@ class HCDriver(BaseSerial):
         # single buffer flush immediately before writing; a second flush with
         # a gap lets async log lines slip in and corrupt the command
         self.ser.reset_input_buffer()
-        self.ser.write((line + "\r\n").encode("ascii"))
+        # this firmware expects a bare CR terminator; sending CRLF makes it
+        # reject the command with 'Bad command'
+        self.ser.write((line + "\r").encode("ascii"))
         time.sleep(settle)
         deadline = time.time() + read_for
         chunks = []
