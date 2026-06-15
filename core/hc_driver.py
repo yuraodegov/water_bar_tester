@@ -123,31 +123,26 @@ class HCDriver(BaseSerial):
             return self._param_dump
         dump = ""
         for _ in range(4):
-            dump = self.hc_cmd("get_param", settle=0.2, read_for=3.0)
+            dump = self.hc_cmd("get_param", settle=0.3, read_for=4.0)
             # the dump is complete once the final parameter has arrived
             if "shabbat_bypass" in dump and "Bad command" not in dump:
                 self._param_dump = dump
                 return dump
-            time.sleep(0.4)
+            time.sleep(0.5)
         # keep whatever we got (parsing will raise if the param is missing)
         self._param_dump = dump
         return dump
 
     def hc_get_param(self, name: str) -> int:
-        # fast path: 'get_param=name' returns 'parameter [NN]: name = val unit'.
-        # The HC echoes the command first and answers a beat later, so retry
-        # a few times with a longer read until the value line actually arrives.
-        for _ in range(4):
-            r = self.hc_cmd(f"get_param={name}", settle=0.3, read_for=1.5)
-            for m in _RE_PARAM.finditer(r):
-                if m.group("name") == name:
-                    return int(m.group("val"))
-            time.sleep(0.3)
-        # fallback: parse from the full bare 'get_param' dump
+        # Read every parameter from the full bare 'get_param' dump, which this
+        # firmware streams reliably. The addressed 'get_param=name' form only
+        # echoes the command back over serial (no value), so we do not use it.
+        # The dump is read once and cached for the rest of the run.
         dump = self.hc_get_param_dump()
         for m in _RE_PARAM.finditer(dump):
             if m.group("name") == name:
                 return int(m.group("val"))
+        # one forced refresh in case the cached dump was truncated
         dump = self.hc_get_param_dump(force=True)
         for m in _RE_PARAM.finditer(dump):
             if m.group("name") == name:
