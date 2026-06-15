@@ -134,12 +134,15 @@ class HCDriver(BaseSerial):
         return dump
 
     def hc_get_param(self, name: str) -> int:
-        # fast path: 'get_param=name' returns 'parameter [NN]: name = val unit'
-        # (retry on async-log collision). Fall back to the full dump if needed.
-        r = self.hc_cmd_clean(f"get_param={name}", read_for=0.8)
-        for m in _RE_PARAM.finditer(r):
-            if m.group("name") == name:
-                return int(m.group("val"))
+        # fast path: 'get_param=name' returns 'parameter [NN]: name = val unit'.
+        # The HC echoes the command first and answers a beat later, so retry
+        # a few times with a longer read until the value line actually arrives.
+        for _ in range(4):
+            r = self.hc_cmd(f"get_param={name}", settle=0.3, read_for=1.5)
+            for m in _RE_PARAM.finditer(r):
+                if m.group("name") == name:
+                    return int(m.group("val"))
+            time.sleep(0.3)
         # fallback: parse from the full bare 'get_param' dump
         dump = self.hc_get_param_dump()
         for m in _RE_PARAM.finditer(dump):
