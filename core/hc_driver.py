@@ -74,24 +74,22 @@ class HCDriver(BaseSerial):
         return b"".join(chunks).decode("ascii", errors="ignore")
 
     def hc_set_param(self, name: str, value: int) -> None:
-        # correct syntax has no spaces around '=' (spaces break the parser);
-        # confirm by reading the value back from the full dump.
-        for cmd in (f"set_param={name}={value}", f"set_param {name} {value}"):
-            r = self.hc_cmd(cmd, read_for=0.8)
-            low = r.lower()
-            if "not found" in low or "not fount" in low:
-                continue
-            if "must be between" in low or "not in range" in low:
-                raise ValueError(f"set_param range error '{name}': {r.strip()!r}")
-            # verify by read-back
-            try:
-                if self.hc_get_param(name) == value:
-                    return
-            except Exception:
-                pass
-            if "new value" in low or "ok" in low:
-                return
-        raise RuntimeError(f"set_param failed '{name}'")
+        # verified syntax: 'set_param=name=value' (no spaces) ->
+        # 'New value name=value'. Retry on async-log collision.
+        r = self.hc_cmd_clean(f"set_param={name}={value}", read_for=0.8)
+        low = r.lower()
+        if "must be between" in low or "not in range" in low:
+            raise ValueError(f"set_param range error '{name}': {r.strip()!r}")
+        if "not found" in low or "not fount" in low:
+            raise RuntimeError(f"set_param param not found '{name}'")
+        # the full-dump cache is now stale
+        self._param_dump = None
+        if "new value" in low:
+            return
+        # fall back to read-back verification
+        if self.hc_get_param(name) == value:
+            return
+        raise RuntimeError(f"set_param failed '{name}': {r.strip()!r}")
 
     def hc_cmd_clean(self, line: str, settle: float = 0.2,
                      read_for: float = 1.2, tries: int = 4) -> str:
@@ -112,11 +110,42 @@ class HCDriver(BaseSerial):
             time.sleep(0.4)
         return last
 
+    def hc_get_param_dump(self, force: bool = False) -> str:
+        """
+        Return the full 'get_param' dump, reading until it looks complete.
+
+        The HC streams ~46 parameter lines over ~2 s, so a short read can cut
+        off the tail (the cooler_* params come last). We read with a long
+        window and retry until the last expected parameter is present. The
+        result is cached for the rest of the run (pass force=True to refresh).
+        """
+        if not force and getattr(self, "_param_dump", None):
+            return self._param_dump
+        dump = ""
+        for _ in range(4):
+            dump = self.hc_cmd("get_param", settle=0.2, read_for=3.0)
+            # the dump is complete once the final parameter has arrived
+            if "shabbat_bypass" in dump and "Bad command" not in dump:
+                self._param_dump = dump
+                return dump
+            time.sleep(0.4)
+        # keep whatever we got (parsing will raise if the param is missing)
+        self._param_dump = dump
+        return dump
+
     def hc_get_param(self, name: str) -> int:
-        # this firmware does not support 'get_param=name' or 'get_param name'
-        # (both return 'Bad command'); the bare 'get_param' lists every
-        # parameter as 'name = value unit', so parse the requested one.
-        dump = self.hc_cmd_clean("get_param", read_for=1.5)
+        # fast path: 'get_param=name' returns 'parameter [NN]: name = val unit'
+        # (retry on async-log collision). Fall back to the full dump if needed.
+        r = self.hc_cmd_clean(f"get_param={name}", read_for=0.8)
+        for m in _RE_PARAM.finditer(r):
+            if m.group("name") == name:
+                return int(m.group("val"))
+        # fallback: parse from the full bare 'get_param' dump
+        dump = self.hc_get_param_dump()
+        for m in _RE_PARAM.finditer(dump):
+            if m.group("name") == name:
+                return int(m.group("val"))
+        dump = self.hc_get_param_dump(force=True)
         for m in _RE_PARAM.finditer(dump):
             if m.group("name") == name:
                 return int(m.group("val"))
