@@ -58,9 +58,8 @@ class HCDriver(BaseSerial):
         if not self.is_connected():
             raise RuntimeError("HC not connected")
 
-        # drain any stale async log lines still in the buffer, then send
-        self.ser.reset_input_buffer()
-        time.sleep(0.1)
+        # single buffer flush immediately before writing; a second flush with
+        # a gap lets async log lines slip in and corrupt the command
         self.ser.reset_input_buffer()
         self.ser.write((line + "\r\n").encode("ascii"))
         time.sleep(settle)
@@ -94,11 +93,30 @@ class HCDriver(BaseSerial):
                 return
         raise RuntimeError(f"set_param failed '{name}'")
 
+    def hc_cmd_clean(self, line: str, settle: float = 0.2,
+                     read_for: float = 1.2, tries: int = 4) -> str:
+        """
+        Send a command and retry while the reply is only 'Bad command'.
+
+        On a busy line the device occasionally sees an async log byte glued
+        to the start of the command and rejects it. The same command on a
+        clean line succeeds (verified manually), so retrying recovers it.
+        A short pause before each retry lets the async burst drain.
+        """
+        last = ""
+        for _ in range(tries):
+            last = self.hc_cmd(line, settle=settle, read_for=read_for)
+            stripped = last.strip()
+            if stripped and "Bad command" not in stripped:
+                return last
+            time.sleep(0.4)
+        return last
+
     def hc_get_param(self, name: str) -> int:
         # this firmware does not support 'get_param=name' or 'get_param name'
         # (both return 'Bad command'); the bare 'get_param' lists every
         # parameter as 'name = value unit', so parse the requested one.
-        dump = self.hc_cmd("get_param", read_for=1.5)
+        dump = self.hc_cmd_clean("get_param", read_for=1.5)
         for m in _RE_PARAM.finditer(dump):
             if m.group("name") == name:
                 return int(m.group("val"))
@@ -107,7 +125,7 @@ class HCDriver(BaseSerial):
     def heater_calibration_flag(self) -> int:
         # 'heater_calibration' is a dedicated command (not an eeprom param);
         # it replies 'Heater calibration flag = N'.
-        r = self.hc_cmd("heater_calibration", read_for=0.8)
+        r = self.hc_cmd_clean("heater_calibration", read_for=0.8)
         m = re.search(r"flag\s*=\s*(-?\d+)", r)
         if m:
             return int(m.group(1))
@@ -151,7 +169,7 @@ class HCDriver(BaseSerial):
         return self.hc_cmd("error")
 
     def hc_status(self) -> dict:
-        r = self.hc_cmd("status", read_for=1.5)
+        r = self.hc_cmd_clean("status", read_for=1.5)
         m = _RE_STATUS.search(r)
         if not m:
             raise RuntimeError(f"could not parse status: {r.strip()!r}")
@@ -163,19 +181,14 @@ class HCDriver(BaseSerial):
         # 'get_temp' is not valid on this firmware (returns 'Bad command'),
         # so read the temperatures straight from the status block, which
         # lists 'TempTank / TempBoost / CWTtemp'.
-        r = self.hc_cmd("get_temp", read_for=1.0)
-        m = _RE_TEMP.search(r)
-        if m:
-            return {k: float(v) for k, v in m.groupdict().items()}
-        # fallback: TempTank/TempBoost/CWTtemp line inside status
-        r2 = self.hc_cmd("status", read_for=1.5)
+        r2 = self.hc_cmd_clean("status", read_for=1.5)
         m2 = re.search(
             r"TempTank:\s*(\d+)\s+TempBoost:\s*(\d+)\s+CWTtemp:\s*(\d+)", r2)
         if m2:
             return {"ttank": float(m2.group(1)),
                     "tboost": float(m2.group(2)),
                     "tcw": float(m2.group(3))}
-        raise RuntimeError(f"could not read temps from get_temp or status: {r.strip()!r}")
+        raise RuntimeError(f"could not read temps from status: {r2.strip()!r}")
 
     def hc_outputs(self) -> dict:
         return self._parse_outputs(self.hc_cmd("get_io", read_for=1.0))

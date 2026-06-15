@@ -115,6 +115,24 @@ class HmiSerial(BaseSerial):
     def get_param(self, param_id=""):
         return self.send_command(f"get_param {param_id}".strip())
 
+    def get_param_value(self, param_id: int) -> int:
+        """
+        Read one HMI parameter by id and return its integer value.
+
+        The device answers '[<id>] <Name> = <value>  (0x..)'; we parse the
+        value for the requested id. Raises if the id is not found or the
+        value is not an integer (e.g. string params like SSID).
+        """
+        resp = self.send_command(f"get_param {param_id}")
+        # match '[29] Core.BoilingTemp = 96000' (ignore trailing hex/units)
+        pat = re.compile(
+            r"\[0*%d\]\s+[\w.\[\]]+\s*=\s*(-?\d+)" % int(param_id))
+        m = pat.search(resp)
+        if not m:
+            raise RuntimeError(
+                f"param [{param_id}] not found / not integer in: {resp!r}")
+        return int(m.group(1))
+
     def set_param(self, param_id: int, value):
         return self.send_command(f"set_param {param_id} {value}")
 
