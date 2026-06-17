@@ -46,11 +46,15 @@ GROUP_ORDER = [
 # ════════════════════════════════════════════════════════════════════════
 #  GUI
 # ════════════════════════════════════════════════════════════════════════
-def run_gui():
+def run_gui(parent=None):
+    # parent=None  -> standalone window (original behavior)
+    # parent=Frame -> embed the whole GUI into the given container (launcher tab)
     import tkinter as tk
     import tkinter.ttk as ttk
     import tkinter.messagebox as mb
     import tkinter.filedialog as fd
+
+    embedded = parent is not None
 
     BG = "#1a1f2e"
     BG2 = "#242938"
@@ -66,11 +70,15 @@ def run_gui():
     FB = ("Consolas", 11, "bold")
     FH = ("Consolas", 13, "bold")
 
-    root = tk.Tk()
-    root.title("Water Bar Tester v2.1")
-    root.geometry("560x780")
-    root.configure(bg=BG)
-    root.minsize(480, 600)
+    if embedded:
+        # build into the supplied container; it becomes our "root"
+        root = parent
+    else:
+        root = tk.Tk()
+        root.title("Water Bar Tester v2.1")
+        root.geometry("560x780")
+        root.configure(bg=BG)
+        root.minsize(480, 600)
 
     hmi_dev = None
     hydr_dev = None
@@ -642,7 +650,8 @@ def run_gui():
     log(f"Discovered {len(all_tests)} tests.", DIM)
     log("Connect HMI (required) and Hydraulic (optional), then RUN.", DIM)
 
-    root.mainloop()
+    if not embedded:
+        root.mainloop()
 
 
 # ════════════════════════════════════════════════════════════════════════
