@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import shutil
 import threading
 import subprocess
 
@@ -26,11 +27,36 @@ try:
 except ImportError:
     HAS_SERIAL = False
 
+# BASE_DIR  — where bundled modules / this script live (for imports)
+# RUN_DIR   — where the tamar_hil/ folder lives on disk at runtime
+#             (next to the .exe when frozen, else the project root)
+FROZEN = getattr(sys, "frozen", False)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RUN_DIR = os.path.dirname(sys.executable) if FROZEN else BASE_DIR
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 import water_bar_tester as wbt  # noqa: E402
+
+
+def real_python():
+    """Return a usable Python interpreter for launching pytest.
+
+    When frozen, sys.executable is the .exe itself (cannot run pytest),
+    so locate a venv or system Python next to / around the program.
+    """
+    if not FROZEN:
+        return sys.executable
+    candidates = [
+        os.path.join(RUN_DIR, "venv", "Scripts", "python.exe"),
+        os.path.join(RUN_DIR, "venv", "bin", "python"),
+        os.path.join(RUN_DIR, ".venv", "Scripts", "python.exe"),
+        os.path.join(RUN_DIR, ".venv", "bin", "python"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return shutil.which("python") or shutil.which("python3") or "python"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -307,7 +333,7 @@ class RunnerTab(tk.Frame):
             messagebox.showwarning("No tests selected",
                                    "Select at least one group.")
             return None
-        cmd = [sys.executable, "-m", "pytest"] + [g["file"] for g in sel]
+        cmd = [real_python(), "-m", "pytest"] + [g["file"] for g in sel]
         cmd += [f"--port-sim={self._pv_sim.get()}"]
         if any("hc" in g["req"] for g in sel) and self._pv_hc.get():
             cmd += [f"--port-hc={self._pv_hc.get()}"]
@@ -342,7 +368,7 @@ class RunnerTab(tk.Frame):
     def _run_th(self, cmd):
         try:
             self._process = subprocess.Popen(
-                cmd, cwd=BASE_DIR, stdout=subprocess.PIPE,
+                cmd, cwd=RUN_DIR, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, bufsize=1,
                 encoding="utf-8", errors="replace")
             for line in self._process.stdout:
