@@ -1,4 +1,4 @@
-name: Build WaterBarTester
+name: Build TamarHC
 
 on:
   push:
@@ -16,8 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      ##- run: pip install flake8
-      ##- run: flake8 . --max-line-length=120 --exclude=.github
+      - run: pip install flake8
+      - run: flake8 . --max-line-length=120 --exclude=.github
 
   # ── 2. Syntax / import check ────────────────────────────────────────
   check:
@@ -43,7 +43,19 @@ jobs:
           print(f"OK: {sum(1 for _ in pathlib.Path('.').rglob('*.py'))} files")
           EOF
 
-  # ── 3. Build .exe ────────────────────────────────────────────────────
+  # ── 3. Collect Tamar HIL tests ──────────────────────────────────────
+  collect-tests:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pyserial pytest
+      - name: Collect tamar_hil tests (no hardware)
+        run: python -m pytest tamar_hil/ --collect-only -q
+
+  # ── 4. Build .exe (unified app) ─────────────────────────────────────
   build-exe:
     runs-on: windows-latest
     needs: check
@@ -60,25 +72,30 @@ jobs:
           pyinstaller `
             --onefile `
             --windowed `
-            --name WaterBarTester `
+            --name TamarHC `
             --add-data "tests;tests" `
             --add-data "core;core" `
             --add-data "runner;runner" `
             --hidden-import serial `
             --hidden-import serial.tools `
             --hidden-import serial.tools.list_ports `
-            water_bar_tester.py
+            app.py
+
+      - name: Stage tamar_hil next to exe
+        shell: pwsh
+        run: Copy-Item -Recurse -Force tamar_hil dist\tamar_hil
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WaterBarTester-exe
-          path: dist/WaterBarTester.exe
+          name: TamarHC-app
+          path: |
+            dist/TamarHC.exe
+            dist/tamar_hil/**
           retention-days: 30
 
-      # При создании Release — прикрепить exe к релизу
       - name: Upload to Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/WaterBarTester.exe
+          files: dist/TamarHC.exe
