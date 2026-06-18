@@ -442,14 +442,16 @@ class App(tk.Tk):
         self._update_sel_count()
 
     def _make_group(self, parent, title, names, kind):
-        header = tk.Frame(parent, bg=C["card"])
+        container = tk.Frame(parent, bg=C["panel"])
+        container.pack(fill="x")
+        header = tk.Frame(container, bg=C["card"])
         header.pack(fill="x", padx=6, pady=(6, 0))
         state = {"open": True}
         arrow = lbl(header, "▼", fg=C["accent"], bg=C["card"], width=2)
         arrow.pack(side="left")
         lbl(header, f"{title} ({len(names)})", fg=C["accent"], bg=C["card"],
             font=FB, anchor="w").pack(side="left", fill="x", expand=True)
-        body = tk.Frame(parent, bg=C["panel"])
+        body = tk.Frame(container, bg=C["panel"])
         body.pack(fill="x", padx=6)
         for n in names:
             v = tk.BooleanVar(value=True)
@@ -472,14 +474,16 @@ class App(tk.Tk):
 
     def _make_tamar_group(self, parent):
         total = sum(g["n"] for g in TEST_GROUPS)
-        header = tk.Frame(parent, bg=C["card"])
+        container = tk.Frame(parent, bg=C["panel"])
+        container.pack(fill="x")
+        header = tk.Frame(container, bg=C["card"])
         header.pack(fill="x", padx=6, pady=(6, 0))
         state = {"open": True}
         arrow = lbl(header, "▼", fg=C["yellow"], bg=C["card"], width=2)
         arrow.pack(side="left")
         lbl(header, f"Tamar HIL ({total})", fg=C["yellow"], bg=C["card"],
             font=FB, anchor="w").pack(side="left", fill="x", expand=True)
-        body = tk.Frame(parent, bg=C["panel"])
+        body = tk.Frame(container, bg=C["panel"])
         body.pack(fill="x", padx=6)
         for g in TEST_GROUPS:
             v = tk.BooleanVar(value=False)
@@ -1363,13 +1367,19 @@ class App(tk.Tk):
 
         # 2) Tamar HIL via pytest (needs ports released)
         if tamar:
-            self.after(0, lambda: self._log(
-                f"--- Tamar HIL: {sum(g['n'] for g in tamar)} tests ---",
-                C["accent"]))
-            self.after(0, self._release_for_pytest)
-            time.sleep(1.0)
-            self._run_pytest(tamar)
-            self.after(0, self._reacquire_after_pytest)
+            if not self.pv_sim.get().strip():
+                self.after(0, lambda: self._log(
+                    "[SKIP] Tamar HIL needs the Simulator (SIM) port. "
+                    "Set SIM and connect the Nucleo, then run again.",
+                    C["yellow"]))
+            else:
+                self.after(0, lambda: self._log(
+                    f"--- Tamar HIL: {sum(g['n'] for g in tamar)} tests ---",
+                    C["accent"]))
+                self.after(0, self._release_for_pytest)
+                time.sleep(1.0)
+                self._run_pytest(tamar)
+                self.after(0, self._reacquire_after_pytest)
 
         self.after(0, self._run_done)
 
@@ -1394,11 +1404,12 @@ class App(tk.Tk):
 
     def _build_pytest_cmd(self, groups):
         cmd = [real_python(), "-m", "pytest"] + [g["file"] for g in groups]
-        cmd += [f"--port-sim={self.pv_sim.get()}"]
-        if any("hc" in g["req"] for g in groups) and self.pv_hc.get():
-            cmd += [f"--port-hc={self.pv_hc.get()}"]
-        if any("hmi" in g["req"] for g in groups) and self.pv_hmi.get():
-            cmd += [f"--port-hmi={self.pv_hmi.get()}"]
+        if self.pv_sim.get().strip():
+            cmd += [f"--port-sim={self.pv_sim.get().strip()}"]
+        if any("hc" in g["req"] for g in groups) and self.pv_hc.get().strip():
+            cmd += [f"--port-hc={self.pv_hc.get().strip()}"]
+        if any("hmi" in g["req"] for g in groups) and self.pv_hmi.get().strip():
+            cmd += [f"--port-hmi={self.pv_hmi.get().strip()}"]
         if not self.opt_slow.get():
             cmd += ["-m", "not slow"]
         if self.opt_verbose.get():
