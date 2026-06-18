@@ -193,6 +193,23 @@ def btn(parent, text, cmd, bg=None, fg=None, font=None, **kw):
                      font=font or FM, **kw)
 
 
+def _hover_scroll(canvas):
+    """Scroll a canvas with the wheel only while the pointer is over it."""
+    def _on(_e):
+        canvas.bind_all(
+            "<MouseWheel>",
+            lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units"))
+        canvas.bind_all("<Button-4>", lambda ev: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda ev: canvas.yview_scroll(1, "units"))
+
+    def _off(_e):
+        canvas.unbind_all("<MouseWheel>")
+        canvas.unbind_all("<Button-4>")
+        canvas.unbind_all("<Button-5>")
+    canvas.bind("<Enter>", _on)
+    canvas.bind("<Leave>", _off)
+
+
 def section(parent, text):
     lbl(parent, text, fg=C["accent"], bg=parent["bg"], font=FB,
         anchor="w").pack(fill="x", padx=8, pady=(10, 1))
@@ -407,10 +424,7 @@ class App(tk.Tk):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        def _wheel(e):
-            canvas.yview_scroll(int(-e.delta / 120), "units")
-        canvas.bind_all("<MouseWheel>", _wheel)
+        _hover_scroll(canvas)
 
         # WBT groups
         grouped = {}
@@ -522,6 +536,7 @@ class App(tk.Tk):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
         col.bind("<Configure>",
                  lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        _hover_scroll(canvas)
 
         # Manual Control — temperatures
         section(col, "MANUAL CONTROL — Temperatures (inject via DAC)")
@@ -739,16 +754,18 @@ class App(tk.Tk):
         return {"led": led, "state": sv, "freq": fv, "duty": dv,
                 "spec": spv, "spec_lbl": spl}
 
-    # ── RIGHT BOTTOM: log ────────────────────────────────────────────────
+    # ── RIGHT BOTTOM: log + terminal ─────────────────────────────────────
     def _build_log(self, parent):
         bar = tk.Frame(parent, bg=C["card"])
         bar.pack(fill="x")
-        lbl(bar, "OUTPUT LOG", fg=C["accent"], bg=C["card"], font=FB).pack(
-            side="left", padx=8, pady=2)
+        lbl(bar, "OUTPUT LOG / TERMINAL", fg=C["accent"], bg=C["card"],
+            font=FB).pack(side="left", padx=8, pady=2)
         btn(bar, "Save", self._save_log, bg=C["card"], padx=8).pack(
             side="right", padx=2)
         btn(bar, "Clear", self._clear_log, bg=C["card"], padx=8).pack(
             side="right")
+        btn(bar, "Open in window", self._open_log_window, bg=C["card"],
+            padx=8).pack(side="right", padx=2)
         self.log_widget = scrolledtext.ScrolledText(
             parent, bg=C["dark"], fg=C["text"], font=FM, wrap="word",
             state="disabled", relief="flat", insertbackground=C["text"])
@@ -757,6 +774,156 @@ class App(tk.Tk):
                          ("warn", C["yellow"]), ("muted", C["muted"]),
                          ("accent", C["accent"]), ("text", C["text"])]:
             self.log_widget.tag_configure(tag, foreground=col)
+
+        # ── command line: [target] [entry .......] [Send] ──
+        cmd_bar = tk.Frame(parent, bg=C["soft"])
+        cmd_bar.pack(fill="x")
+        self.term_target = tk.StringVar(value="HMI")
+        ttk.Combobox(cmd_bar, textvariable=self.term_target,
+                     values=["HMI", "HC", "SIM"], width=5, font=FM,
+                     state="readonly").pack(side="left", padx=(6, 4), pady=4)
+        self.term_entry = tk.Entry(cmd_bar, bg=C["dark"], fg=C["green"],
+                                   font=FM, insertbackground=C["green"],
+                                   relief="flat")
+        self.term_entry.pack(side="left", fill="x", expand=True, padx=2, pady=4)
+        self.term_entry.bind("<Return>", lambda e: self._term_send())
+        self.term_entry.bind("<Up>", self._term_history_up)
+        self.term_entry.bind("<Down>", self._term_history_down)
+        btn(cmd_bar, "Send", self._term_send, bg=C["accent2"], fg=C["white"],
+            font=FB, padx=12).pack(side="left", padx=4)
+
+        # ── editable quick-command buttons ──
+        self.quick_cmds = [
+            {"label": "get_temp", "target": "HMI", "cmd": "get_temp"},
+            {"label": "PTD?", "target": "HMI", "cmd": "get_param 124"},
+            {"label": "press 1", "target": "HMI", "cmd": "press 1 1000"},
+            {"label": "press 4", "target": "HMI", "cmd": "press 4 1000"},
+            {"label": "HC temp", "target": "HC", "cmd": "get_temp"},
+            {"label": "simulate=63", "target": "HC", "cmd": "simulate=63"},
+            {"label": "HC outputs", "target": "HC", "cmd": "get_outputs"},
+            {"label": "STATUS OUT", "target": "SIM", "cmd": "STATUS OUT"},
+            {"label": "PRESET IDLE", "target": "SIM", "cmd": "PRESET IDLE"},
+            {"label": "RESET", "target": "SIM", "cmd": "RESET"},
+        ]
+        self._term_history = []
+        self._term_hist_idx = 0
+        self.quick_bar = tk.Frame(parent, bg=C["soft"])
+        self.quick_bar.pack(fill="x")
+        lbl(self.quick_bar, "Quick (right-click to edit):", fg=C["muted"],
+            bg=C["soft"], font=FS).pack(side="left", padx=(6, 4))
+        self.quick_holder = tk.Frame(self.quick_bar, bg=C["soft"])
+        self.quick_holder.pack(side="left", fill="x", expand=True)
+        btn(self.quick_bar, "+ Add", self._quick_add, bg=C["card"],
+            font=FS, padx=6).pack(side="right", padx=4)
+        self._render_quick()
+        self.log_window = None
+
+    # ── terminal send / history ──
+    def _term_send(self):
+        cmd = self.term_entry.get().strip()
+        if not cmd:
+            return
+        self._term_history.append(cmd)
+        self._term_hist_idx = len(self._term_history)
+        self.term_entry.delete(0, "end")
+        self._send_to(self.term_target.get(), cmd)
+
+    def _term_history_up(self, _e):
+        if self._term_history and self._term_hist_idx > 0:
+            self._term_hist_idx -= 1
+            self.term_entry.delete(0, "end")
+            self.term_entry.insert(0, self._term_history[self._term_hist_idx])
+        return "break"
+
+    def _term_history_down(self, _e):
+        if self._term_hist_idx < len(self._term_history) - 1:
+            self._term_hist_idx += 1
+            self.term_entry.delete(0, "end")
+            self.term_entry.insert(0, self._term_history[self._term_hist_idx])
+        else:
+            self.term_entry.delete(0, "end")
+            self._term_hist_idx = len(self._term_history)
+        return "break"
+
+    # ── quick command buttons (editable, like a terminal) ──
+    def _render_quick(self):
+        for w in self.quick_holder.winfo_children():
+            w.destroy()
+        tcol = {"HMI": C["accent"], "HC": C["green"], "SIM": C["yellow"]}
+        for i, q in enumerate(self.quick_cmds):
+            b = tk.Button(self.quick_holder,
+                          text=q["label"], font=FS, relief="flat",
+                          cursor="hand2", padx=6, pady=2,
+                          bg=C["card"], fg=tcol.get(q["target"], C["text"]),
+                          command=lambda qq=q: self._send_to(qq["target"],
+                                                             qq["cmd"]))
+            b.grid(row=i // 5, column=i % 5, padx=2, pady=2, sticky="ew")
+            b.bind("<Button-3>", lambda e, idx=i: self._quick_edit(idx))
+        for c in range(5):
+            self.quick_holder.columnconfigure(c, weight=1)
+
+    def _quick_add(self):
+        self.quick_cmds.append({"label": "new", "target": "HMI", "cmd": ""})
+        self._render_quick()
+        self._quick_edit(len(self.quick_cmds) - 1)
+
+    def _quick_edit(self, idx):
+        q = self.quick_cmds[idx]
+        dlg = tk.Toplevel(self)
+        dlg.title("Edit quick command")
+        dlg.configure(bg=C["panel"])
+        dlg.transient(self)
+        dlg.grab_set()
+        lbl(dlg, "Label", bg=C["panel"]).grid(row=0, column=0, sticky="e",
+                                              padx=6, pady=4)
+        e_label = tk.Entry(dlg, bg=C["dark"], fg=C["text"], font=FM)
+        e_label.insert(0, q["label"])
+        e_label.grid(row=0, column=1, padx=6, pady=4)
+        lbl(dlg, "Target", bg=C["panel"]).grid(row=1, column=0, sticky="e",
+                                               padx=6, pady=4)
+        v_tgt = tk.StringVar(value=q["target"])
+        ttk.Combobox(dlg, textvariable=v_tgt, values=["HMI", "HC", "SIM"],
+                     width=6, state="readonly", font=FM).grid(
+            row=1, column=1, sticky="w", padx=6, pady=4)
+        lbl(dlg, "Command", bg=C["panel"]).grid(row=2, column=0, sticky="e",
+                                                padx=6, pady=4)
+        e_cmd = tk.Entry(dlg, bg=C["dark"], fg=C["green"], font=FM, width=28)
+        e_cmd.insert(0, q["cmd"])
+        e_cmd.grid(row=2, column=1, padx=6, pady=4)
+
+        def save():
+            q["label"] = e_label.get().strip() or "cmd"
+            q["target"] = v_tgt.get()
+            q["cmd"] = e_cmd.get().strip()
+            self._render_quick()
+            dlg.destroy()
+
+        def delete():
+            self.quick_cmds.pop(idx)
+            self._render_quick()
+            dlg.destroy()
+        bf = tk.Frame(dlg, bg=C["panel"])
+        bf.grid(row=3, column=0, columnspan=2, pady=8)
+        btn(bf, "Save", save, bg=C["accent2"], fg=C["white"], padx=12).pack(
+            side="left", padx=4)
+        btn(bf, "Delete", delete, bg="#7f1d1d", fg="#fca5a5", padx=12).pack(
+            side="left", padx=4)
+
+    def _open_log_window(self):
+        if self.log_window and tk.Toplevel.winfo_exists(self.log_window):
+            self.log_window.lift()
+            return
+        win = tk.Toplevel(self)
+        win.title("Output Log")
+        win.configure(bg=C["dark"])
+        win.geometry("900x600")
+        txt = scrolledtext.ScrolledText(win, bg=C["dark"], fg=C["text"],
+                                        font=FM, wrap="word", relief="flat")
+        txt.pack(fill="both", expand=True)
+        txt.insert("end", "\n".join(self._log_buffer) + "\n")
+        txt.see("end")
+        self.log_window = win
+        self.log_window_txt = txt
 
     # ── BOTTOM run bar ───────────────────────────────────────────────────
     def _build_runbar(self):
@@ -803,6 +970,7 @@ class App(tk.Tk):
             self.log_widget.configure(state="disabled")
         except Exception:
             pass
+        self._mirror(line)
 
     def _log_raw(self, text, tag="text"):
         try:
@@ -813,6 +981,19 @@ class App(tk.Tk):
         except Exception:
             pass
         self._log_buffer.append(text)
+        self._mirror(text)
+
+    def _mirror(self, line):
+        win = getattr(self, "log_window", None)
+        if win is not None:
+            try:
+                if tk.Toplevel.winfo_exists(win):
+                    self.log_window_txt.insert("end", line + "\n")
+                    self.log_window_txt.see("end")
+                else:
+                    self.log_window = None
+            except Exception:
+                self.log_window = None
 
     def _clear_log(self):
         self._log_buffer.clear()
@@ -949,13 +1130,49 @@ class App(tk.Tk):
     # ════════════════════════════════════════════════════════════════════
     #  MANUAL CONTROL (simulator)
     # ════════════════════════════════════════════════════════════════════
+    def _send_to(self, target, cmd):
+        """Unified command send. Uses the correct method per device:
+        HMI -> send_command (CRLF), HC(HCDriver) -> hc_cmd (bare CR!),
+        HC(HydraulicSerial) -> send_command, SIM -> SimConn.send."""
+        if not cmd:
+            return
+        if target == "SIM":
+            if not self.sim.connected:
+                self._log("[SIM] not connected.", C["red"])
+                return
+            self._log(f"[SIM] > {cmd}", C["accent"])
+
+            def _ts():
+                resp = self.sim.send(cmd)
+                self.after(0, lambda: self._log(f"  {resp or '(no reply)'}",
+                                                C["muted"]))
+            threading.Thread(target=_ts, daemon=True).start()
+            return
+        if target == "HMI":
+            dev = self.hmi_dev
+        else:
+            dev = self.hydr_dev
+        if dev is None or (hasattr(dev, "is_connected")
+                           and not dev.is_connected()):
+            self._log(f"[{target}] not connected.", C["red"])
+            return
+        self._log(f"[{target}] > {cmd}", C["accent"])
+
+        def _t():
+            try:
+                if target == "HC" and isinstance(dev, HCDriver):
+                    resp = dev.hc_cmd(cmd)          # bare CR — firmware needs it
+                else:
+                    resp = dev.send_command(cmd)    # HMI / HydraulicSerial
+            except Exception as exc:
+                resp = f"ERROR: {exc}"
+            self.after(0, lambda r=resp: self._log(f"  {r or '(no reply)'}",
+                                                   C["muted"]))
+        threading.Thread(target=_t, daemon=True).start()
+
     def _sim_send(self, cmd):
-        if not self.sim.connected:
-            self._log("[SIM] not connected.", C["red"])
-            return ""
-        resp = self.sim.send(cmd)
-        self._log(f"[SIM] {cmd} -> {resp}", C["muted"])
-        return resp
+        self._send_to("SIM", cmd)
+        return ""
 
     def _send_temp(self, key):
         if not self.sim.connected:
@@ -971,6 +1188,8 @@ class App(tk.Tk):
         # WET -> 1, DRY -> 0  (per smoke spec SM-03: "ELEC LF 1")
         if self.sim.connected:
             self.sim.send(f"ELEC {name} {1 if v.get() else 0}", wait_ms=120)
+        else:
+            self._log("[SIM] not connected (electrode not sent).", C["yellow"])
 
     def _paint_elec(self, name):
         v = self.elec[name]
@@ -988,30 +1207,22 @@ class App(tk.Tk):
             self._log("[ERROR] HMI not connected.", C["red"])
             return
         dur = int(self.p_dur.get() or 1000)
-        self._log(f"[MANUAL] press {bid} {dur} ({bname})", C["accent"])
+        self._log(f"[HMI] > press {bid} {dur} ({bname})", C["accent"])
 
         def _t():
-            resp = self.hmi_dev.press(bid, dur)
-            self.after(0, lambda: self._log(f"  -> {resp}", C["muted"]))
+            try:
+                resp = self.hmi_dev.press(bid, dur)
+            except Exception as exc:
+                resp = f"ERROR: {exc}"
+            self.after(0, lambda r=resp: self._log(f"  {r or '(no reply)'}",
+                                                   C["muted"]))
         threading.Thread(target=_t, daemon=True).start()
 
     def _send_manual_cmd(self):
         cmd = self.cmd_var.get().strip()
         if not cmd:
             return
-        tgt = self.cmd_target.get()
-        if tgt == "SIM":
-            self._sim_send(cmd)
-            return
-        dev = self.hmi_dev if tgt == "HMI" else self.hydr_dev
-        if dev is None:
-            self._log(f"[ERROR] {tgt} not connected.", C["red"])
-            return
-
-        def _t():
-            resp = dev.send_command(cmd)
-            self.after(0, lambda: self._log(f"[{tgt}] {cmd} -> {resp}", C["accent"]))
-        threading.Thread(target=_t, daemon=True).start()
+        self._send_to(self.cmd_target.get(), cmd)
 
     # ════════════════════════════════════════════════════════════════════
     #  LIVE MONITOR POLLING
