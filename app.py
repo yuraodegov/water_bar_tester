@@ -286,6 +286,8 @@ class App(tk.Tk):
                      for k in ("LF", "LE", "SE", "TRAY", "COLD")}
         self.flow = tk.DoubleVar(value=0.0)
 
+        self.sel_count = tk.StringVar(value="")
+        self.timer_var = tk.StringVar(value="")
         self.test_vars = {}     # WBT test name -> BooleanVar
         self.group_vars = {}    # tamar group id -> BooleanVar
         self.mon_rows = {}
@@ -294,7 +296,6 @@ class App(tk.Tk):
         self._build_header()
         self._build_connection()
         self._build_main()
-        self._build_runbar()
 
         self._log("Unified Test Instrument ready.", C["accent"])
         self._log(f"Discovered {len(self.all_tests)} WBT tests + "
@@ -403,14 +404,15 @@ class App(tk.Tk):
 
     # ── LEFT: unified test list ──────────────────────────────────────────
     def _build_test_list(self, parent):
+        self._build_run_controls(parent)   # RUN / STOP / MONITOR above tests
         section(parent, "SELECT TESTS")
         bar = tk.Frame(parent, bg=C["panel"])
         bar.pack(fill="x", padx=8, pady=2)
         btn(bar, "All", self._select_all, bg=C["card"], padx=6).pack(side="left")
         btn(bar, "None", self._select_none, bg=C["card"], padx=6).pack(
             side="left", padx=4)
-        self.sel_count = tk.StringVar(value="")
         lbl(bar, "", fg=C["muted"], bg=C["panel"]).pack(side="right")
+        bar.winfo_children()[-1].configure(textvariable=self.sel_count)
 
         wrap = tk.Frame(parent, bg=C["panel"])
         wrap.pack(fill="both", expand=True, padx=4, pady=4)
@@ -926,33 +928,32 @@ class App(tk.Tk):
         self.log_window_txt = txt
 
     # ── BOTTOM run bar ───────────────────────────────────────────────────
-    def _build_runbar(self):
-        self.progress = ttk.Progressbar(self, mode="indeterminate",
-                                        style="A.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", padx=4)
-        bar = tk.Frame(self, bg=C["soft"], pady=8, padx=12)
-        bar.pack(fill="x")
-        self.btn_run = tk.Button(bar, text="▶  RUN SELECTED",
+    def _build_run_controls(self, parent):
+        wrap = tk.Frame(parent, bg=C["soft"], pady=6, padx=6)
+        wrap.pack(fill="x", padx=4, pady=(6, 0))
+        row = tk.Frame(wrap, bg=C["soft"])
+        row.pack(fill="x")
+        self.btn_run = tk.Button(row, text="▶ RUN TESTS",
                                  command=self._run_selected, bg=C["accent2"],
                                  fg=C["white"], font=FB, relief="flat",
-                                 padx=18, pady=6, state="disabled")
-        self.btn_run.pack(side="left", padx=(0, 5))
-        self.btn_monitor = tk.Button(bar, text="MONITOR",
+                                 padx=10, pady=5, state="disabled")
+        self.btn_run.pack(side="left", padx=(0, 4))
+        self.btn_stop = tk.Button(row, text="■ STOP", command=self._stop,
+                                  bg="#7f1d1d", fg="#fca5a5", font=FB,
+                                  relief="flat", padx=10, pady=5,
+                                  state="disabled")
+        self.btn_stop.pack(side="left", padx=4)
+        self.btn_monitor = tk.Button(row, text="MONITOR",
                                      command=self._run_monitor, bg="#1d4ed8",
                                      fg=C["white"], font=FB, relief="flat",
-                                     padx=12, pady=6, state="disabled")
-        self.btn_monitor.pack(side="left", padx=5)
-        self.btn_stop = tk.Button(bar, text="■  STOP", command=self._stop,
-                                  bg="#7f1d1d", fg="#fca5a5", font=FB,
-                                  relief="flat", padx=12, pady=6,
-                                  state="disabled")
-        self.btn_stop.pack(side="left", padx=5)
-        self.timer_var = tk.StringVar(value="")
-        lbl(bar, "", fg=C["accent"], bg=C["soft"], font=("Consolas", 11)).pack(
-            side="right")
-        bar.winfo_children()[-1].configure(textvariable=self.timer_var)
-        lbl(bar, "", fg=C["muted"], bg=C["soft"]).pack(side="right", padx=10)
-        bar.winfo_children()[-1].configure(textvariable=self.sel_count)
+                                     padx=10, pady=5, state="disabled")
+        self.btn_monitor.pack(side="left", padx=4)
+        lbl(row, "", fg=C["accent"], bg=C["soft"],
+            font=("Consolas", 11)).pack(side="right")
+        row.winfo_children()[-1].configure(textvariable=self.timer_var)
+        self.progress = ttk.Progressbar(wrap, mode="indeterminate",
+                                        style="A.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(4, 0))
 
     # ════════════════════════════════════════════════════════════════════
     #  LOGGING
