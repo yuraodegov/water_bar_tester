@@ -1190,9 +1190,9 @@ class App(tk.Tk):
         v = self.elec[name]
         v.set(not v.get())
         self._paint_elec(name)
-        # WET -> 1, DRY -> 0  (per smoke spec SM-03: "ELEC LF 1")
+        # Firmware convention (cmd_parser.c): 0 = WET, 1 = DRY
         if self.sim.connected:
-            self.sim.send(f"ELEC {name} {1 if v.get() else 0}", wait_ms=120)
+            self.sim.send(f"ELEC {name} {0 if v.get() else 1}", wait_ms=120)
         else:
             self._log("[SIM] not connected (electrode not sent).", C["yellow"])
 
