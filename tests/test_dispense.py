@@ -21,7 +21,7 @@ import time
 from tests.test_base import BaseTest, TestResult
 
 TOLERANCE_ML = 150
-SETTLE_SEC = 8          # pause after a pour before the next test
+SETTLE_SEC = 60         # pause after a pour before the next test
 HOT_RE = [re.compile(r'HOT\s+(\d+)\s*mil', re.I),
           re.compile(r'HW\s*fil:\s*(\d+)', re.I)]
 COLD_RE = [re.compile(r'Flow\s*meter\s+(\d+)', re.I),

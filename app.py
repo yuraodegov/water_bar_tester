@@ -266,6 +266,7 @@ class App(tk.Tk):
         self.p_fmax = tk.StringVar(value="5000")
         self.p_cycles = tk.StringVar(value="17")
         self.p_pause = tk.StringVar(value="300")
+        self.p_settle = tk.StringVar(value="60")
         # monitor params
         self.m_min = tk.StringVar(value="30")
         self.m_cyc = tk.StringVar(value="0")
@@ -575,7 +576,8 @@ class App(tk.Tk):
         pf.pack(fill="x", padx=8, pady=2)
         presets = [("IDLE", C["teal"]), ("FILL_START", C["green"]),
                    ("FILL_STOP", C["yellow"]), ("HOT_DISP", C["red"]),
-                   ("COLD_DISP", C["cyan"]), ("AMB_DISP", C["purple"]),
+                   ("HOT_DISP_LOW", C["red"]), ("COLD_DISP", C["cyan"]),
+                   ("COLD_DRY", C["cyan"]), ("AMB_DISP", C["purple"]),
                    ("EXTRA_HOT", C["orange"]), ("SHABBAT", C["pink"]),
                    ("RESET", C["muted"])]
         for i, (name, col_) in enumerate(presets):
@@ -626,6 +628,7 @@ class App(tk.Tk):
         for label, var in [("Target (L)", self.p_target),
                            ("Press dur (ms)", self.p_dur),
                            ("Pour wait (s)", self.p_wait),
+                           ("Dispense settle (s)", self.p_settle),
                            ("Tolerance (ml)", self.p_tol),
                            ("Hot min (C)", self.p_hotmin),
                            ("Cold max (C)", self.p_coldmax),
@@ -1313,6 +1316,7 @@ class App(tk.Tk):
             "filter_max_liters": float(self.p_fmax.get() or 5000),
             "long_term_cycles": int(self.p_cycles.get() or 17),
             "long_term_pause_sec": int(self.p_pause.get() or 300),
+            "dispense_settle_sec": float(self.p_settle.get() or 60),
             "use_hydraulic": self.use_hydr.get(),
             "monitor_minutes": float(self.m_min.get() or 30),
             "monitor_cycles": int(self.m_cyc.get() or 0),
