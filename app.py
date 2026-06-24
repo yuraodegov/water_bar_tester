@@ -1405,6 +1405,65 @@ class App(tk.Tk):
             self._log(f"Report -> {out}", C["accent"])
         except Exception as e:
             self._log(f"[WARN] report save failed: {e}", C["yellow"])
+        # regression: compare against the previous baseline, then update it
+        try:
+            self._regression_compare(results)
+            self._save_baseline(results)
+        except Exception as e:
+            self._log(f"[WARN] regression step failed: {e}", C["yellow"])
+
+    def _baseline_path(self):
+        return os.path.join(RUN_DIR, "reports", "baseline.json")
+
+    def _save_baseline(self, results):
+        import json
+        data = {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "results": {r.test_name: bool(r.passed) for r in results}}
+        os.makedirs(os.path.dirname(self._baseline_path()), exist_ok=True)
+        with open(self._baseline_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _regression_compare(self, results):
+        """Compare this run with the saved baseline and report changes."""
+        import json
+        path = self._baseline_path()
+        if not os.path.isfile(path):
+            self._log("[REGRESSION] No baseline yet — this run becomes the "
+                      "baseline.", C["muted"])
+            return
+        with open(path, encoding="utf-8") as f:
+            base = json.load(f)
+        prev = base.get("results", {})
+        now = {r.test_name: bool(r.passed) for r in results}
+
+        regressed, fixed, new = [], [], []
+        for name, ok in now.items():
+            if name not in prev:
+                new.append(name)
+            elif prev[name] and not ok:
+                regressed.append(name)        # was PASS, now FAIL
+            elif not prev[name] and ok:
+                fixed.append(name)            # was FAIL, now PASS
+        removed = [n for n in prev if n not in now]
+
+        self._log("=" * 56, C["muted"])
+        self._log(f"[REGRESSION] vs baseline ({base.get('timestamp', '?')})",
+                  C["accent"])
+        if regressed:
+            self._log(f"  REGRESSED (was PASS, now FAIL): {len(regressed)}",
+                      C["red"])
+            for n in regressed:
+                self._log(f"    ✗ {n}", C["red"])
+        if fixed:
+            self._log(f"  FIXED (was FAIL, now PASS): {len(fixed)}", C["green"])
+            for n in fixed:
+                self._log(f"    ✓ {n}", C["green"])
+        if new:
+            self._log(f"  NEW tests: {len(new)}", C["muted"])
+        if removed:
+            self._log(f"  REMOVED tests: {len(removed)}", C["muted"])
+        if not (regressed or fixed or new or removed):
+            self._log("  No changes vs baseline — stable.", C["green"])
 
     def _build_pytest_cmd(self, groups):
         cmd = [real_python(), "-m", "pytest"] + [g["file"] for g in groups]
