@@ -139,6 +139,14 @@ class HmiSerial(BaseSerial):
     def get_error(self):
         return self.send_command("get_error")
 
+    def set_error(self, error_id):
+        """Raise error <error_id> on the device (HMI 'set_error <N>')."""
+        return self.send_command(f"set_error {error_id}")
+
+    def clear_error(self, error_id):
+        """Clear error <error_id> on the device (HMI 'clear_error <N>')."""
+        return self.send_command(f"clear_error {error_id}")
+
     def get_rtc(self):
         return self.send_command("get_rtc")
 
