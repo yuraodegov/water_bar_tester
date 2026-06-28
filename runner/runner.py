@@ -70,12 +70,18 @@ class TestRunner:
 
     def generate_report(self) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            from core.version import get_version
+            version = get_version()
+        except Exception:
+            version = "?"
         passed = sum(1 for r in self.results if r.passed)
         failed = len(self.results) - passed
         lines = []
         lines.append("=" * 55)
         lines.append("       WATER BAR TESTER — REPORT")
         lines.append(f"       {now}")
+        lines.append(f"       version: {version}")
         lines.append("=" * 55)
         lines.append(f"  HMI port       : {self.config.get('hmi_port', '?')}")
         lines.append(f"  Hydraulic port : {self.config.get('hydraulic_port', '?')}")

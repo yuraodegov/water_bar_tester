@@ -48,6 +48,9 @@ from core.hydraulic_serial import HydraulicSerial  # noqa: E402
 from core.hc_driver import HCDriver            # noqa: E402
 from runner.runner import TestRunner, discover_tests  # noqa: E402
 from water_bar_tester import _group_of, GROUP_ORDER   # noqa: E402
+from core.version import get_version                  # noqa: E402
+
+APP_VERSION = get_version()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +229,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Tamar HC — Unified Test Instrument")
+        self.title(f"Tamar HC — Unified Test Instrument  ({APP_VERSION})")
         self.configure(bg=C["bg"])
         self.minsize(1180, 800)
         w, h = 1320, 880
