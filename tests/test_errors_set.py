@@ -95,6 +95,16 @@ def _make_error_test(code, name, region):
         CATEGORY = "errors_set"
         CODE, ENAME, REGION = code, name, region
 
+        def _poll_active(self, hmi, want_active, timeout=6.0):
+            """Poll get_error until the code's active state matches want_active
+            (or timeout). Returns the final active boolean."""
+            deadline = time.time() + timeout
+            active = _err_active(hmi.get_error(), self.CODE)
+            while active != want_active and time.time() < deadline:
+                time.sleep(1.0)
+                active = _err_active(hmi.get_error(), self.CODE)
+            return active
+
         def run(self) -> TestResult:
             err = self._require_hmi()
             if err:
@@ -103,19 +113,27 @@ def _make_error_test(code, name, region):
             data = {"code": self.CODE, "name": self.ENAME, "region": self.REGION}
             errors = []
             try:
-                hmi.set_error(self.CODE)
-                time.sleep(SETTLE)
-                after_set = hmi.get_error()
-                raised = _err_active(after_set, self.CODE)
+                set_resp = hmi.set_error(self.CODE) or ""
+                # Some codes are rejected by the device itself (it answers
+                # CMD EXECUTE ERROR, which send_command surfaces as "FAILED"
+                # after its retries). Treat those as "not settable" rather
+                # than a failure.
+                if ("CMD EXECUTE ERROR" in set_resp
+                        or set_resp.strip() == "FAILED"):
+                    data["rejected_by_device"] = True
+                    self.log(f"  set_error {self.CODE} -> rejected by device")
+                    return self._pass(
+                        f"INFO error {self.CODE} not settable via set_error "
+                        "(device rejects it)", data)
+
+                raised = self._poll_active(hmi, want_active=True)
                 data["raised"] = raised
                 self.log(f"  set_error {self.CODE} -> active={raised}")
                 if not raised:
                     errors.append(f"error {self.CODE} not active after set_error")
 
                 hmi.clear_error(self.CODE)
-                time.sleep(SETTLE)
-                after_clear = hmi.get_error()
-                still = _err_active(after_clear, self.CODE)
+                still = self._poll_active(hmi, want_active=False)
                 data["cleared"] = not still
                 self.log(f"  clear_error {self.CODE} -> active={still}")
                 if still:

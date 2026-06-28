@@ -24,6 +24,8 @@ TOLERANCE_ML = 150
 SETTLE_SEC = 60         # pause after a pour before the next test
 HOT_RE = [re.compile(r'HOT\s+(\d+)\s*mil', re.I),
           re.compile(r'HW\s*fil:\s*(\d+)', re.I)]
+# Hot dispense volume is reported on the HMI console as "HOT Dispense : N (ml)".
+HOT_HMI_RE = [re.compile(r'HOT\s+Dispense\s*:\s*(\d+)', re.I)]
 COLD_RE = [re.compile(r'Flow\s*meter\s+(\d+)', re.I),
            re.compile(r'COLD\s+(\d+)\s*mil', re.I),
            re.compile(r'AMB\s+(\d+)\s*mil', re.I)]
@@ -83,6 +85,21 @@ def _run_dispense(test: BaseTest, button_id: int,
         lines += stream.listen(6.0, stop_substr="HW fil")
 
     vol = _extract(lines, patterns)
+
+    # Hot dispense volume is usually reported on the HMI console
+    # ("HOT Dispense : N (ml)"), not on the HC stream. Look in the press
+    # response first (it can appear within the press window), then listen
+    # on the HMI console if still not found.
+    if kind == "hot" and vol is None:
+        resp_vol = _extract([resp] if resp else [], HOT_HMI_RE)
+        if resp_vol is not None:
+            vol = resp_vol
+        elif test.hmi and test.hmi.is_connected():
+            hmi_lines = test.hmi.listen(8.0, stop_substr="HOT Dispense")
+            hmi_vol = _extract(hmi_lines, HOT_HMI_RE)
+            if hmi_vol is not None:
+                vol = hmi_vol
+                lines += hmi_lines
     captured = " | ".join(lines[-8:]) if lines else "(nothing)"
     test.log(f"  stream tail: {captured}")
     test.log(f"  measured volume = {vol} ml (target {target_ml})")
