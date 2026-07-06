@@ -276,6 +276,12 @@ class App(tk.Tk):
         self.m_hmi = tk.StringVar(value="120")
         self.m_hc = tk.StringVar(value="60")
         self.m_pause = tk.StringVar(value="30")
+        # shabbat / daily-cycle params
+        self.sh_year = tk.StringVar(value=str(datetime.now().year))
+        self.sh_count = tk.StringVar(value="1")      # 0 = all shabbats in year
+        self.sh_wait = tk.StringVar(value="3")       # observation wait / stage
+        self.sh_daystep = tk.StringVar(value="2")    # 24h cycle step (hours)
+        self.sh_enter_to = tk.StringVar(value="60")  # max wait for STATE: SHABBAT
         # tamar run options
         self.opt_slow = tk.BooleanVar(value=False)
         self.opt_verbose = tk.BooleanVar(value=True)
@@ -648,6 +654,29 @@ class App(tk.Tk):
                            ("HC poll (s)", self.m_hc),
                            ("Pause (s)", self.m_pause)]:
             self._param_row(col, label, var)
+
+        # Shabbat / daily-cycle parameters
+        section(col, "Shabbat & Daily Cycle")
+        # year selector (dropdown of available schedule years)
+        try:
+            from shabbat_schedules import SCHEDULES
+            years = [str(y) for y in sorted(SCHEDULES.keys())]
+        except Exception:
+            years = [str(datetime.now().year)]
+        yr = tk.Frame(col, bg=C["panel"])
+        yr.pack(fill="x", padx=8, pady=1)
+        lbl(yr, "Year", fg=C["muted"], bg=C["panel"], width=18,
+            anchor="w").pack(side="left")
+        ttk.Combobox(yr, textvariable=self.sh_year, values=years, width=8,
+                     font=FM, state="readonly").pack(side="left")
+        # count: 1 = one shabbat, 0 = whole year (run one after another)
+        self._param_row(col, "Shabbats (0=all)", self.sh_count)
+        self._param_row(col, "Enter timeout (s)", self.sh_enter_to)
+        self._param_row(col, "Stage wait (s)", self.sh_wait)
+        self._param_row(col, "Day step (h)", self.sh_daystep)
+        lbl(col, "SHB-AUTO runs N Shabbats; DAY-24H runs a full day.",
+            fg=C["muted"], bg=C["panel"], font=FS, anchor="w").pack(
+            fill="x", padx=8, pady=(1, 4))
 
         # Tamar run options
         section(col, "Tamar HIL Run Options")
@@ -1326,6 +1355,11 @@ class App(tk.Tk):
             "monitor_hmi_period": float(self.m_hmi.get() or 120),
             "monitor_hc_period": float(self.m_hc.get() or 60),
             "monitor_pause": float(self.m_pause.get() or 30),
+            "shabbat_year": int(self.sh_year.get() or datetime.now().year),
+            "shabbat_count": int(self.sh_count.get() or 1),
+            "stage_wait_sec": float(self.sh_wait.get() or 3),
+            "day_step_hours": int(self.sh_daystep.get() or 2),
+            "shabbat_enter_timeout_sec": float(self.sh_enter_to.get() or 60),
         }
 
     def _selected_wbt(self):

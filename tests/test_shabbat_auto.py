@@ -2,26 +2,32 @@
 tests/test_shabbat_auto.py — automatic Shabbat and 24-hour daily-cycle tests.
 
 Technique (from the field script): the device RTC is driven with `set_rtc`
-to simulate time passing, then the Shabbat automaton is triggered and the
-device is polled for errors at each stage. No physical waiting for real
-Shabbat times is needed.
+to simulate time passing, then the Shabbat automaton is armed and the HC
+STATE stream is watched to confirm a real entry into Shabbat.
 
-Commands (HMI console, confirmed in the field script):
+Entry is verified by the STATE chain printed on the HC stream:
+    STATE: PREPARE_SHABBAT_FILLING
+    STATE: PREPARE_SHABBAT_BOILING
+    STATE: PREPARE_SHABBAT_DONE
+    STATE: SHABBAT                <- final state
+The test requires these to appear in order within the enter timeout.
+It also confirms with the `shabbat_state` command when available.
+
+Commands (HMI console, from the field script):
     set_rtc <dd/mm/YYYY HH:MM:SS>   set the device real-time clock
-    shabbat_auto ENTRY_READY        arm the automatic Shabbat entry
+    shabbat_auto ENTRY_READY        arm automatic Shabbat entry
     get_error                       read active errors
+Command (HC console):
+    shabbat_state                   read the current Shabbat state (confirm)
 
-Schedules for 2025-2050 come from shabbat_schedules.py (real entry/exit
-times). Configurable via config:
-    shabbat_year   : which year to use          (default: current year)
-    shabbat_count  : how many Shabbats to run    (default: 1; 0 = all)
-    stage_wait_sec : observation wait per stage  (default: 3s; raise for
-                     real runs so the device has time to react)
-
-Each Shabbat cycle reproduces the field flow:
-    wake 4h before prep -> prep 1min before entry -> arm entry ->
-    4h before exit -> exit +99min -> check errors.
+Schedules for 2025-2050 come from shabbat_schedules.py. Config keys:
+    shabbat_year            year to use            (default: current year)
+    shabbat_count           how many Shabbats      (default: 1; 0 = all)
+    stage_wait_sec          settle wait per RTC set (default: 3s)
+    shabbat_enter_timeout_sec  max wait for STATE: SHABBAT (default: 60s)
+    day_step_hours          24h cycle step         (default: 2h)
 """
+import re
 import time
 from datetime import datetime, timedelta
 from tests.test_base import BaseTest, TestResult
@@ -33,18 +39,33 @@ except Exception:
 
 RTC_FMT = "%d/%m/%Y %H:%M:%S"
 
+# ordered STATE chain that proves a real Shabbat entry (from HC stream)
+ENTER_CHAIN = [
+    "PREPARE_SHABBAT_FILLING",
+    "PREPARE_SHABBAT_BOILING",
+    "PREPARE_SHABBAT_DONE",
+    "SHABBAT",
+]
+STATE_RE = re.compile(r"STATE:\s*([A-Z_]+)", re.I)
 
-def _stage_wait(test):
+
+def _wait(test):
     return float(test.config.get("stage_wait_sec", 3))
 
 
-def _hmi_cmd(test, cmd):
-    """Send a command on the HMI console and return the response text."""
+def _enter_timeout(test):
+    return float(test.config.get("shabbat_enter_timeout_sec", 60))
+
+
+def _hmi(test, cmd):
     return test.hmi.send_command(cmd)
 
 
+def _set_rtc(test, dt):
+    return _hmi(test, f"set_rtc {dt.strftime(RTC_FMT)}")
+
+
 def _errors_present(resp):
-    """True if get_error reports at least one active error."""
     if not resp:
         return False
     up = resp.upper()
@@ -53,22 +74,50 @@ def _errors_present(resp):
     return "ERROR ID" in up or "ERROR:" in up
 
 
-def _set_rtc(test, dt):
-    return _hmi_cmd(test, f"set_rtc {dt.strftime(RTC_FMT)}")
+def _states_from(lines):
+    """Extract the ordered list of STATE names from raw HC lines."""
+    out = []
+    for ln in lines:
+        m = STATE_RE.search(ln)
+        if m:
+            out.append(m.group(1).upper())
+    return out
+
+
+def _chain_ok(seen):
+    """True if ENTER_CHAIN appears as an ordered subsequence of `seen`."""
+    it = iter(seen)
+    return all(any(s == step for s in it) for step in ENTER_CHAIN)
+
+
+def _confirm_state(test):
+    """Confirm current Shabbat state with the `shabbat_state` command on HC.
+    Returns (available: bool, is_shabbat: bool). If the command is not
+    supported yet, available is False and the caller ignores it."""
+    hc = test.hydraulic
+    if hc is None or not hc.is_connected():
+        return False, False
+    resp = ""
+    try:
+        # HCDriver exposes hc_cmd (bare CR); fall back to send_command
+        if hasattr(hc, "hc_cmd"):
+            resp = hc.hc_cmd("shabbat_state") or ""
+        else:
+            resp = hc.send_command("shabbat_state") or ""
+    except Exception:
+        return False, False
+    up = resp.upper()
+    if not up or "CMD EXECUTE ERROR" in up or "FAILED" in up:
+        return False, False
+    return True, ("SHABBAT" in up and "PREPARE" not in up.split("SHABBAT")[0][-8:])
 
 
 def _run_one_cycle(test, entry_dt, exit_dt, name):
-    """Run a single Shabbat cycle. Returns (ok, stage_errors:list)."""
-    wait = _stage_wait(test)
-    stage_errors = []
-
-    def check(stage):
-        resp = _hmi_cmd(test, "get_error")
-        if _errors_present(resp):
-            stage_errors.append(f"{stage}: {resp.strip()[:80]}")
-            test.log(f"    [{name}] {stage}: ERROR {resp.strip()[:60]}")
-        else:
-            test.log(f"    [{name}] {stage}: no errors")
+    """Run one Shabbat cycle. Returns (ok, info)."""
+    wait = _wait(test)
+    hc = test.hydraulic
+    have_stream = hc is not None and hc.is_connected()
+    info = {"name": name}
 
     # 1) wake up 4 hours before preparation
     _set_rtc(test, entry_dt - timedelta(hours=4))
@@ -76,25 +125,61 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
     # 2) preparation, 1 minute before entry
     _set_rtc(test, entry_dt - timedelta(minutes=1))
     time.sleep(wait)
-    # 3) arm automatic Shabbat entry
-    _hmi_cmd(test, "shabbat_auto ENTRY_READY")
-    time.sleep(wait)
-    check("entry")
+    # 3) arm automatic Shabbat entry, then watch the HC STATE stream
+    _hmi(test, "shabbat_auto ENTRY_READY")
+
+    seen = []
+    if have_stream:
+        deadline = time.time() + _enter_timeout(test)
+        while time.time() < deadline:
+            lines = hc.listen(3.0, stop_substr="STATE: SHABBAT")
+            seen.extend(_states_from(lines))
+            if "SHABBAT" in seen and _chain_ok(seen):
+                break
+    info["states"] = seen
+
+    entered_by_chain = _chain_ok(seen)
+    available, is_shabbat = _confirm_state(test)
+    info["shabbat_state_available"] = available
+    info["shabbat_state_is_shabbat"] = is_shabbat
+
+    test.log(f"    [{name}] chain={'OK' if entered_by_chain else 'MISSING'} "
+             f"states={seen[-6:]}")
+    if available:
+        test.log(f"    [{name}] shabbat_state confirms: "
+                 f"{'SHABBAT' if is_shabbat else 'NOT shabbat'}")
+
+    # entry is OK if the STATE chain was seen; if the stream is not available
+    # fall back to the shabbat_state command; if neither, we cannot verify
+    if have_stream:
+        entered = entered_by_chain or (available and is_shabbat)
+    else:
+        entered = available and is_shabbat
+    info["entered"] = entered
+    if not entered:
+        if not have_stream and not available:
+            info["reason"] = ("cannot verify entry: HC stream not connected "
+                              "and shabbat_state unavailable")
+        else:
+            info["reason"] = "STATE chain to SHABBAT not observed in timeout"
+
     # 4) 4 hours before exit
     _set_rtc(test, exit_dt - timedelta(hours=4))
     time.sleep(wait)
     # 5) exit + 99 minutes
     _set_rtc(test, exit_dt + timedelta(minutes=99))
     time.sleep(wait)
-    check("exit")
+    err_resp = _hmi(test, "get_error")
+    info["exit_errors"] = _errors_present(err_resp)
 
-    return (len(stage_errors) == 0), stage_errors
+    ok = entered and not info["exit_errors"]
+    return ok, info
 
 
 class TestShabbatAuto(BaseTest):
     NAME = "SHB-AUTO Automatic Shabbat cycle(s)"
-    DESCRIPTION = ("Drive RTC through Shabbat entry/exit for N scheduled "
-                   "Shabbats and verify no errors are raised.")
+    DESCRIPTION = ("Drive RTC through Shabbat entry for N scheduled Shabbats "
+                   "and verify the STATE chain PREPARE->SHABBAT (+ shabbat_state).")
     CATEGORY = "shabbat_auto"
 
     def run(self) -> TestResult:
@@ -113,25 +198,27 @@ class TestShabbatAuto(BaseTest):
         if count > 0:
             sched = sched[:count]
 
-        self.log(f"  running {len(sched)} Shabbat cycle(s) for {year}")
-        all_errors = {}
+        self.log(f"  running {len(sched)} Shabbat cycle(s) for {year} "
+                 f"(enter timeout {int(_enter_timeout(self))}s)")
+        failed = {}
         for item in sched:
             if self.stop_check():
-                return self._fail("stopped by user", {"done": list(all_errors)})
+                return self._fail("stopped by user", {"done": list(failed)})
             entry = datetime.strptime(item["entry"], RTC_FMT)
             exit_dt = datetime.strptime(item["exit"], RTC_FMT)
-            ok, errs = _run_one_cycle(self, entry, exit_dt, item["name"])
+            ok, info = _run_one_cycle(self, entry, exit_dt, item["name"])
             if not ok:
-                all_errors[item["name"]] = errs
+                failed[item["name"]] = info.get("reason",
+                                                "exit errors" if info.get(
+                                                    "exit_errors") else "failed")
 
-        data = {"year": year, "cycles": len(sched),
-                "failed_cycles": all_errors}
-        if all_errors:
+        data = {"year": year, "cycles": len(sched), "failed": failed}
+        if failed:
             return self._fail(
-                f"{len(all_errors)}/{len(sched)} Shabbat cycles had errors",
-                data)
+                f"{len(failed)}/{len(sched)} Shabbat cycle(s) failed", data)
         return self._pass(
-            f"OK {len(sched)} Shabbat cycle(s) for {year}, no errors", data)
+            f"OK {len(sched)} Shabbat cycle(s) for {year}: entered via STATE "
+            "chain, no exit errors", data)
 
 
 class TestDailyAutoCycle(BaseTest):
@@ -145,8 +232,7 @@ class TestDailyAutoCycle(BaseTest):
         if err:
             return err
 
-        # start at midnight of a chosen date (default: today)
-        base_str = self.config.get("day_start")  # "dd/mm/YYYY" optional
+        base_str = self.config.get("day_start")  # optional "dd/mm/YYYY"
         if base_str:
             try:
                 base = datetime.strptime(base_str, "%d/%m/%Y")
@@ -157,7 +243,7 @@ class TestDailyAutoCycle(BaseTest):
             base = datetime(now.year, now.month, now.day)
 
         step_hours = int(self.config.get("day_step_hours", 2))
-        wait = _stage_wait(self)
+        wait = _wait(self)
         steps = list(range(0, 24, max(1, step_hours))) + [24]
 
         self.log(f"  simulating a full day from {base.strftime('%d/%m/%Y')} "
@@ -169,7 +255,7 @@ class TestDailyAutoCycle(BaseTest):
             t = base + timedelta(hours=h)
             _set_rtc(self, t)
             time.sleep(wait)
-            resp = _hmi_cmd(self, "get_error")
+            resp = _hmi(self, "get_error")
             mark = "ERR" if _errors_present(resp) else "ok"
             self.log(f"    {t.strftime('%H:%M')} -> {mark}")
             if _errors_present(resp):
