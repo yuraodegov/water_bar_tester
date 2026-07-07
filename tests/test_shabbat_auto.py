@@ -58,7 +58,9 @@ def _step_wait(test):
 
 
 def _enter_timeout(test):
-    return float(test.config.get("shabbat_enter_timeout_sec", 60))
+    # Prepare (fill+boil) can take 40-60 min before a forced entry, so the
+    # default is 75 min. Set to 0 for an infinite wait (until SHABBAT/STOP).
+    return float(test.config.get("shabbat_enter_timeout_sec", 4500))
 
 
 def _exit_settle(test):
@@ -137,16 +139,35 @@ def _read_exit_offset(test):
 
 def _watch_for_shabbat(test, hc, timeout):
     """Watch the HC stream until the entry chain reaches STATE: SHABBAT.
-    Returns (entered:bool, states:list)."""
+
+    On a real device the prepare phase (fill + boil) can take 40-60 minutes,
+    after which the controller forces the Shabbat entry. So the timeout must
+    be large. If `timeout` <= 0 the wait is INFINITE (until STATE: SHABBAT
+    or the user presses STOP) so a stuck situation can be investigated.
+
+    Returns (entered:bool, states:list).
+    """
     seen = []
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    start = time.time()
+    infinite = timeout <= 0
+    last_log = 0
+    while True:
         if test.stop_check():
+            break
+        elapsed = time.time() - start
+        if not infinite and elapsed >= timeout:
             break
         lines = hc.listen(3.0, stop_substr="STATE: SHABBAT")
         seen.extend(_states_from(lines))
         if "SHABBAT" in seen and _chain_ok(seen):
             return True, seen
+        # periodic progress log so a long prepare is visible, not a hang
+        if int(elapsed) - last_log >= 30:
+            last_log = int(elapsed)
+            last = seen[-1] if seen else "(none)"
+            mode = "infinite" if infinite else f"{int(timeout)}s"
+            test.log(f"      waiting for STATE: SHABBAT... {int(elapsed)}s "
+                     f"(timeout {mode}), last state={last}")
     return _chain_ok(seen), seen
 
 
@@ -268,8 +289,10 @@ class TestShabbatAuto(BaseTest):
         if count > 0:
             sched = sched[:count]
 
+        to = _enter_timeout(self)
+        to_str = "infinite" if to <= 0 else f"{int(to)}s ({int(to // 60)}min)"
         self.log(f"  running {len(sched)} Shabbat cycle(s) for {year} "
-                 f"(enter timeout {int(_enter_timeout(self))}s)")
+                 f"(enter timeout {to_str})")
         failed = {}
         for item in sched:
             if self.stop_check():
