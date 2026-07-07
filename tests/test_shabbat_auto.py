@@ -175,7 +175,8 @@ def _shabbat_setup(test):
         (167, 60),     # Shabbat_exit_offset  (real exit 60 min after)
         (169, 180),    # Summer_offset (UTC+3)
         (170, 120),    # Winter_offset (UTC+2)
-        (172, 0),      # clear last near-event marker
+        # NOTE: param 172 (last near-event marker) is rejected by set_param
+        # on the device (CMD EXECUTE ERROR), so it is not written here.
     ]
     for pid, val in cfg:
         test.hmi.set_param(pid, val)
@@ -269,17 +270,21 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
     test.hmi.set_param(168, flag)
     info["season"] = "winter" if flag else "summer"
     time.sleep(0.2)
-    # prepare starts Shabbat_enter_offset minutes BEFORE the calendar entry;
-    # arrive 1 minute before prepare starts so the whole prepare phase runs.
+    # prepare starts Shabbat_enter_offset minutes BEFORE the calendar entry.
     enter_offset = _read_param(test, 166, 60)
     prep_start = entry_dt - timedelta(minutes=enter_offset)
-    arrive = prep_start - timedelta(minutes=1)
     info["enter_offset"] = enter_offset
     test.log(f"    [{name}] season={info['season']} enter_offset={enter_offset} "
-             f"-> arrive {arrive.strftime(RTC_FMT)} "
              f"(prepare starts {prep_start.strftime(RTC_FMT)})")
+    # 1) FIRST STEP: arrive 6 hours before prepare, wait a minute
+    _set_rtc(test, prep_start - timedelta(hours=6))
+    time.sleep(step)
+    # 2) move to 1 minute before prepare starts so the whole prepare phase runs
+    arrive = prep_start - timedelta(minutes=1)
+    test.log(f"    [{name}] -> arrive {arrive.strftime(RTC_FMT)} (prep-1min)")
     _set_rtc(test, arrive)
     time.sleep(step)
+    # 3) arm auto entry
     _hmi(test, "shabbat_auto ENTRY_READY")
     # GATE: wait for STATE: SHABBAT. The device enters via its ~60-min
     # internal prepare timeout; the test only continues after SHABBAT.
