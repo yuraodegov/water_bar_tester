@@ -47,6 +47,9 @@ ENTER_CHAIN = [
     "SHABBAT",
 ]
 STATE_RE = re.compile(r"STATE:\s*([A-Z_]+)", re.I)
+# exit is confirmed when the controller returns to IDLE. Match STATE: IDLE /
+# HEATER: IDLE / START_IDLE, but NOT "Dispenser: IDLE_STATE" (\b stops before _).
+EXIT_IDLE_RE = re.compile(r"(?:STATE|HEATER):\s*(START_IDLE|IDLE)\b", re.I)
 
 
 def _wait(test):
@@ -55,6 +58,12 @@ def _wait(test):
 
 def _enter_timeout(test):
     return float(test.config.get("shabbat_enter_timeout_sec", 60))
+
+
+def _exit_settle(test):
+    # pause after set_rtc(exit-1min) while the RTC ticks through the exit
+    # moment; the controller must return to IDLE within this window.
+    return float(test.config.get("shabbat_exit_settle_sec", 180))
 
 
 def _hmi(test, cmd):
@@ -163,16 +172,54 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
         else:
             info["reason"] = "STATE chain to SHABBAT not observed in timeout"
 
-    # 4) 4 hours before exit
+    # ── EXIT ──
+    # 4) 4 hours before exit (approach)
     _set_rtc(test, exit_dt - timedelta(hours=4))
     time.sleep(wait)
-    # 5) exit + 99 minutes
-    _set_rtc(test, exit_dt + timedelta(minutes=99))
-    time.sleep(wait)
+    # 5) exit - 1 minute, then hold a pause so the RTC ticks THROUGH the exit
+    #    moment. This is what actually drives the controller out of Shabbat
+    #    and back to IDLE (symmetric to the entry step). Watch the HC stream
+    #    for the return to IDLE during the pause.
+    _set_rtc(test, exit_dt - timedelta(minutes=1))
+    exited = False
+    exit_states = []
+    if have_stream:
+        deadline = time.time() + _exit_settle(test)
+        while time.time() < deadline:
+            if test.stop_check():
+                break
+            lines = hc.listen(3.0)  # hold the full pause, collect the stream
+            exit_states.extend(_states_from(lines))
+            if any(EXIT_IDLE_RE.search(ln) for ln in lines):
+                exited = True
+                # keep listening a little so the pause is honoured, but we
+                # have our confirmation
+        info["exit_states"] = exit_states[-6:]
+    else:
+        # no HC stream: just hold the pause so the device processes the exit
+        time.sleep(_exit_settle(test))
+
+    # confirm exit with shabbat_state when available
+    avail2, is_shabbat2 = _confirm_state(test)
+    if avail2:
+        info["exit_state_is_idle"] = not is_shabbat2
+        if not is_shabbat2:
+            exited = True
+
     err_resp = _hmi(test, "get_error")
     info["exit_errors"] = _errors_present(err_resp)
+    info["exited"] = exited
 
-    ok = entered and not info["exit_errors"]
+    if have_stream or avail2:
+        test.log(f"    [{name}] exit -> IDLE: {'OK' if exited else 'NOT seen'} "
+                 f"states={exit_states[-4:]}")
+
+    # overall: entered AND (exit verified if we could verify) AND no errors
+    can_verify_exit = have_stream or avail2
+    exit_ok = exited if can_verify_exit else True
+    ok = entered and exit_ok and not info["exit_errors"]
+    if not exit_ok:
+        info["reason"] = "did not return to IDLE after exit"
     return ok, info
 
 

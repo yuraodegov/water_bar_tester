@@ -282,6 +282,7 @@ class App(tk.Tk):
         self.sh_wait = tk.StringVar(value="3")       # observation wait / stage
         self.sh_daystep = tk.StringVar(value="2")    # 24h cycle step (hours)
         self.sh_enter_to = tk.StringVar(value="60")  # max wait for STATE: SHABBAT
+        self.sh_exit_settle = tk.StringVar(value="180")  # pause at exit-1min (3min)
         # tamar run options
         self.opt_slow = tk.BooleanVar(value=False)
         self.opt_verbose = tk.BooleanVar(value=True)
@@ -672,6 +673,7 @@ class App(tk.Tk):
         # count: 1 = one shabbat, 0 = whole year (run one after another)
         self._param_row(col, "Shabbats (0=all)", self.sh_count)
         self._param_row(col, "Enter timeout (s)", self.sh_enter_to)
+        self._param_row(col, "Exit settle (s)", self.sh_exit_settle)
         self._param_row(col, "Stage wait (s)", self.sh_wait)
         self._param_row(col, "Day step (h)", self.sh_daystep)
         lbl(col, "SHB-AUTO runs N Shabbats; DAY-24H runs a full day.",
@@ -1360,6 +1362,7 @@ class App(tk.Tk):
             "stage_wait_sec": float(self.sh_wait.get() or 3),
             "day_step_hours": int(self.sh_daystep.get() or 2),
             "shabbat_enter_timeout_sec": float(self.sh_enter_to.get() or 60),
+            "shabbat_exit_settle_sec": float(self.sh_exit_settle.get() or 180),
         }
 
     def _selected_wbt(self):
