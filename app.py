@@ -283,6 +283,8 @@ class App(tk.Tk):
         self.sh_daystep = tk.StringVar(value="2")    # 24h cycle step (hours)
         self.sh_enter_to = tk.StringVar(value="4500")  # max wait for SHABBAT; 0=inf
         self.sh_exit_settle = tk.StringVar(value="180")  # pause at exit-1min (3min)
+        self.sh_enter_off = tk.StringVar(value="60")   # prepare starts entry-60min
+        self.sh_exit_off = tk.StringVar(value="100")   # real exit = exit+100min
         # tamar run options
         self.opt_slow = tk.BooleanVar(value=False)
         self.opt_verbose = tk.BooleanVar(value=True)
@@ -672,6 +674,8 @@ class App(tk.Tk):
                      font=FM, state="readonly").pack(side="left")
         # count: 1 = one shabbat, 0 = whole year (run one after another)
         self._param_row(col, "Shabbats (0=all)", self.sh_count)
+        self._param_row(col, "Enter offset (min)", self.sh_enter_off)
+        self._param_row(col, "Exit offset (min)", self.sh_exit_off)
         self._param_row(col, "Enter timeout s (0=inf)", self.sh_enter_to)
         self._param_row(col, "Exit settle (s)", self.sh_exit_settle)
         self._param_row(col, "Step wait (s)", self.sh_wait)
@@ -1363,6 +1367,8 @@ class App(tk.Tk):
             "day_step_hours": int(self.sh_daystep.get() or 2),
             "shabbat_enter_timeout_sec": float(self.sh_enter_to.get() or 4500),
             "shabbat_exit_settle_sec": float(self.sh_exit_settle.get() or 180),
+            "shabbat_enter_offset": int(self.sh_enter_off.get() or 60),
+            "shabbat_exit_offset": int(self.sh_exit_off.get() or 100),
         }
 
     def _selected_wbt(self):

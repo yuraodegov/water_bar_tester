@@ -107,27 +107,12 @@ def _chain_ok(seen):
     return all(any(s == step for s in it) for step in ENTER_CHAIN)
 
 
-def _read_param(test, pid, default):
-    """Read an HMI integer parameter (get_param, read-only). Returns `default`
-    on any failure. Never writes anything."""
-    try:
-        v = test.hmi.get_param_value(pid)
-        return int(v) if v is not None else default
-    except Exception:
-        return default
 
 
 def _read_exit_offset(test):
-    """Read Shabbat_exit_offset (HMI param 167), minutes: how many minutes
-    after the calendar exit the device really leaves Shabbat. This only
-    READS the value (get_param), it never writes it. Falls back to the
-    config default if it cannot be read."""
-    default = int(test.config.get("shabbat_exit_offset_default", 100))
-    try:
-        v = test.hmi.get_param_value(167)
-        return int(v) if v is not None else default
-    except Exception:
-        return default
+    """Shabbat_exit_offset in minutes, fixed from config (default 100).
+    Not read from the device (unreliable here)."""
+    return int(test.config.get("shabbat_exit_offset", 100))
 
 
 def _watch_for_shabbat(test, hc, timeout):
@@ -187,7 +172,7 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
     # ── ENTRY ──
     # prepare starts Shabbat_enter_offset minutes before the calendar entry.
     # We only READ the offset (get_param), never write it.
-    enter_offset = _read_param(test, 166, 60)
+    enter_offset = int(test.config.get("shabbat_enter_offset", 60))
     prep_start = entry_dt - timedelta(minutes=enter_offset)
     info["enter_offset"] = enter_offset
     # 1) arrive 6 hours before the calendar entry, wait a minute
