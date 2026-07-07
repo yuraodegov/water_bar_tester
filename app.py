@@ -279,7 +279,7 @@ class App(tk.Tk):
         # shabbat / daily-cycle params
         self.sh_year = tk.StringVar(value=str(datetime.now().year))
         self.sh_count = tk.StringVar(value="1")      # 0 = all shabbats in year
-        self.sh_wait = tk.StringVar(value="3")       # observation wait / stage
+        self.sh_wait = tk.StringVar(value="60")      # "wait a minute" between steps
         self.sh_daystep = tk.StringVar(value="2")    # 24h cycle step (hours)
         self.sh_enter_to = tk.StringVar(value="60")  # max wait for STATE: SHABBAT
         self.sh_exit_settle = tk.StringVar(value="180")  # pause at exit-1min (3min)
@@ -674,7 +674,7 @@ class App(tk.Tk):
         self._param_row(col, "Shabbats (0=all)", self.sh_count)
         self._param_row(col, "Enter timeout (s)", self.sh_enter_to)
         self._param_row(col, "Exit settle (s)", self.sh_exit_settle)
-        self._param_row(col, "Stage wait (s)", self.sh_wait)
+        self._param_row(col, "Step wait (s)", self.sh_wait)
         self._param_row(col, "Day step (h)", self.sh_daystep)
         lbl(col, "SHB-AUTO runs N Shabbats; DAY-24H runs a full day.",
             fg=C["muted"], bg=C["panel"], font=FS, anchor="w").pack(

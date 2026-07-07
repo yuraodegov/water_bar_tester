@@ -52,8 +52,9 @@ STATE_RE = re.compile(r"STATE:\s*([A-Z_]+)", re.I)
 EXIT_IDLE_RE = re.compile(r"(?:STATE|HEATER):\s*(START_IDLE|IDLE)\b", re.I)
 
 
-def _wait(test):
-    return float(test.config.get("stage_wait_sec", 3))
+def _step_wait(test):
+    # "wait a minute" pause between RTC moves (default 60s).
+    return float(test.config.get("stage_wait_sec", 60))
 
 
 def _enter_timeout(test):
@@ -121,105 +122,127 @@ def _confirm_state(test):
     return True, ("SHABBAT" in up and "PREPARE" not in up.split("SHABBAT")[0][-8:])
 
 
+def _read_exit_offset(test):
+    """Read Shabbat_exit_offset (HMI param 167) in minutes. This is how many
+    minutes after the calendar exit the device actually leaves Shabbat.
+    Falls back to config default (100) if the param cannot be read."""
+    try:
+        v = test.hmi.get_param_value(167)
+        if v is not None:
+            return int(v)
+    except Exception:
+        pass
+    return int(test.config.get("shabbat_exit_offset_default", 100))
+
+
+def _watch_for_shabbat(test, hc, timeout):
+    """Watch the HC stream until the entry chain reaches STATE: SHABBAT.
+    Returns (entered:bool, states:list)."""
+    seen = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if test.stop_check():
+            break
+        lines = hc.listen(3.0, stop_substr="STATE: SHABBAT")
+        seen.extend(_states_from(lines))
+        if "SHABBAT" in seen and _chain_ok(seen):
+            return True, seen
+    return _chain_ok(seen), seen
+
+
+def _watch_for_idle(test, hc, settle):
+    """Hold the exit pause while watching the HC stream for the return to
+    IDLE. Honours the full pause (does not return early) so the device
+    settles before the next cycle. Returns (idle_seen:bool, states:list)."""
+    seen = []
+    idle = False
+    deadline = time.time() + settle
+    while time.time() < deadline:
+        if test.stop_check():
+            break
+        lines = hc.listen(3.0)
+        seen.extend(_states_from(lines))
+        if any(EXIT_IDLE_RE.search(ln) for ln in lines):
+            idle = True
+    return idle, seen
+
+
 def _run_one_cycle(test, entry_dt, exit_dt, name):
-    """Run one Shabbat cycle. Returns (ok, info)."""
-    wait = _wait(test)
+    """Run one full Shabbat cycle following the field procedure:
+
+    ENTRY:
+      entry-6h  -> wait a minute
+      entry-1min-> arm auto entry, WAIT for STATE: SHABBAT (gate!)
+      after SHABBAT -> wait 1 minute
+    EXIT:
+      exit-6h   -> wait a minute
+      exit-1h   -> wait a minute
+      FINAL: exit + Shabbat_exit_offset - 1min  (offset~100 => exit+99min)
+             -> pause 3 min so the RTC ticks through the real exit -> IDLE
+
+    The test only proceeds past entry once the device reports STATE: SHABBAT.
+    Returns (ok, info).
+    """
+    step = _step_wait(test)          # "wait a minute" pause
     hc = test.hydraulic
     have_stream = hc is not None and hc.is_connected()
     info = {"name": name}
 
-    # 1) wake up 4 hours before preparation
-    _set_rtc(test, entry_dt - timedelta(hours=4))
-    time.sleep(wait)
-    # 2) preparation, 1 minute before entry
+    if not have_stream:
+        # entry is verified from the HC STATE stream; without it we cannot
+        # honour the "continue only after STATE: SHABBAT" rule.
+        return False, {"name": name,
+                       "reason": "HC stream required (STATE: chain) - connect HC"}
+
+    # ── ENTRY ──
+    # arrive 6 hours before prepare-shabbat, wait a minute
+    _set_rtc(test, entry_dt - timedelta(hours=6))
+    time.sleep(step)
+    # move to 1 minute before prepare-shabbat, arm the auto entry
     _set_rtc(test, entry_dt - timedelta(minutes=1))
-    time.sleep(wait)
-    # 3) arm automatic Shabbat entry, then watch the HC STATE stream
     _hmi(test, "shabbat_auto ENTRY_READY")
-
-    seen = []
-    if have_stream:
-        deadline = time.time() + _enter_timeout(test)
-        while time.time() < deadline:
-            lines = hc.listen(3.0, stop_substr="STATE: SHABBAT")
-            seen.extend(_states_from(lines))
-            if "SHABBAT" in seen and _chain_ok(seen):
-                break
-    info["states"] = seen
-
-    entered_by_chain = _chain_ok(seen)
-    available, is_shabbat = _confirm_state(test)
-    info["shabbat_state_available"] = available
-    info["shabbat_state_is_shabbat"] = is_shabbat
-
-    test.log(f"    [{name}] chain={'OK' if entered_by_chain else 'MISSING'} "
+    # GATE: wait for STATE: SHABBAT. The test only continues after this.
+    entered, seen = _watch_for_shabbat(test, hc, _enter_timeout(test))
+    info["enter_states"] = seen[-6:]
+    test.log(f"    [{name}] enter chain={'OK' if entered else 'MISSING'} "
              f"states={seen[-6:]}")
-    if available:
-        test.log(f"    [{name}] shabbat_state confirms: "
-                 f"{'SHABBAT' if is_shabbat else 'NOT shabbat'}")
-
-    # entry is OK if the STATE chain was seen; if the stream is not available
-    # fall back to the shabbat_state command; if neither, we cannot verify
-    if have_stream:
-        entered = entered_by_chain or (available and is_shabbat)
-    else:
-        entered = available and is_shabbat
-    info["entered"] = entered
     if not entered:
-        if not have_stream and not available:
-            info["reason"] = ("cannot verify entry: HC stream not connected "
-                              "and shabbat_state unavailable")
-        else:
-            info["reason"] = "STATE chain to SHABBAT not observed in timeout"
+        info["reason"] = "device did not report STATE: SHABBAT within timeout"
+        info["entered"] = False
+        return False, info
+    info["entered"] = True
+    # after entry, wait 1 minute
+    time.sleep(step)
 
     # ── EXIT ──
-    # 4) 4 hours before exit (approach)
-    _set_rtc(test, exit_dt - timedelta(hours=4))
-    time.sleep(wait)
-    # 5) exit - 1 minute, then hold a pause so the RTC ticks THROUGH the exit
-    #    moment. This is what actually drives the controller out of Shabbat
-    #    and back to IDLE (symmetric to the entry step). Watch the HC stream
-    #    for the return to IDLE during the pause.
-    _set_rtc(test, exit_dt - timedelta(minutes=1))
-    exited = False
-    exit_states = []
-    if have_stream:
-        deadline = time.time() + _exit_settle(test)
-        while time.time() < deadline:
-            if test.stop_check():
-                break
-            lines = hc.listen(3.0)  # hold the full pause, collect the stream
-            exit_states.extend(_states_from(lines))
-            if any(EXIT_IDLE_RE.search(ln) for ln in lines):
-                exited = True
-                # keep listening a little so the pause is honoured, but we
-                # have our confirmation
-        info["exit_states"] = exit_states[-6:]
-    else:
-        # no HC stream: just hold the pause so the device processes the exit
-        time.sleep(_exit_settle(test))
-
-    # confirm exit with shabbat_state when available
-    avail2, is_shabbat2 = _confirm_state(test)
-    if avail2:
-        info["exit_state_is_idle"] = not is_shabbat2
-        if not is_shabbat2:
-            exited = True
-
+    # 6 hours before exit, wait a minute
+    _set_rtc(test, exit_dt - timedelta(hours=6))
+    time.sleep(step)
+    # 1 hour before exit, wait a minute
+    _set_rtc(test, exit_dt - timedelta(hours=1))
+    time.sleep(step)
+    # FINAL: read Shabbat_exit_offset and move to exit+offset-1min, then hold
+    # a 3-minute pause so the RTC crosses the real exit and the device returns
+    # to IDLE. This is the step that actually fixes the Shabbat exit.
+    offset = _read_exit_offset(test)
+    final_dt = exit_dt + timedelta(minutes=offset - 1)
+    info["exit_offset"] = offset
+    test.log(f"    [{name}] exit_offset={offset} -> final RTC "
+             f"{final_dt.strftime(RTC_FMT)} (exit+{offset - 1}min)")
+    _set_rtc(test, final_dt)
+    exited, exit_states = _watch_for_idle(test, hc, _exit_settle(test))
+    info["exit_states"] = exit_states[-6:]
     err_resp = _hmi(test, "get_error")
     info["exit_errors"] = _errors_present(err_resp)
     info["exited"] = exited
+    test.log(f"    [{name}] exit -> IDLE: {'OK' if exited else 'NOT seen'} "
+             f"states={exit_states[-4:]}")
 
-    if have_stream or avail2:
-        test.log(f"    [{name}] exit -> IDLE: {'OK' if exited else 'NOT seen'} "
-                 f"states={exit_states[-4:]}")
-
-    # overall: entered AND (exit verified if we could verify) AND no errors
-    can_verify_exit = have_stream or avail2
-    exit_ok = exited if can_verify_exit else True
-    ok = entered and exit_ok and not info["exit_errors"]
-    if not exit_ok:
-        info["reason"] = "did not return to IDLE after exit"
+    ok = entered and exited and not info["exit_errors"]
+    if not exited:
+        info["reason"] = "device did not return to IDLE after exit"
+    elif info["exit_errors"]:
+        info["reason"] = "errors present after exit"
     return ok, info
 
 
@@ -290,7 +313,7 @@ class TestDailyAutoCycle(BaseTest):
             base = datetime(now.year, now.month, now.day)
 
         step_hours = int(self.config.get("day_step_hours", 2))
-        wait = _wait(self)
+        wait = _step_wait(self)
         steps = list(range(0, 24, max(1, step_hours))) + [24]
 
         self.log(f"  simulating a full day from {base.strftime('%d/%m/%Y')} "
