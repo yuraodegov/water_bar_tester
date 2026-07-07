@@ -127,14 +127,61 @@ def _confirm_state(test):
 def _read_exit_offset(test):
     """Read Shabbat_exit_offset (HMI param 167) in minutes. This is how many
     minutes after the calendar exit the device actually leaves Shabbat.
-    Falls back to config default (100) if the param cannot be read."""
+    Falls back to config default (60) if the param cannot be read."""
+    return _read_param(test, 167, int(test.config.get(
+        "shabbat_exit_offset_default", 60)))
+
+
+def _read_param(test, pid, default):
+    """Read an HMI integer parameter, returning `default` on any failure."""
     try:
-        v = test.hmi.get_param_value(167)
-        if v is not None:
-            return int(v)
+        v = test.hmi.get_param_value(pid)
+        return int(v) if v is not None else default
     except Exception:
-        pass
-    return int(test.config.get("shabbat_exit_offset_default", 100))
+        return default
+
+
+def _israel_is_dst(dt):
+    """True if `dt` is within Israel daylight-saving (summer) time.
+    DST: last Friday of March 02:00 -> last Sunday of October 02:00."""
+    y = dt.year
+    d = datetime(y, 3, 31)
+    while d.weekday() != 4:          # 4 = Friday
+        d -= timedelta(days=1)
+    dst_start = d.replace(hour=2)
+    d = datetime(y, 10, 31)
+    while d.weekday() != 6:          # 6 = Sunday
+        d -= timedelta(days=1)
+    dst_end = d.replace(hour=2)
+    return dst_start <= dt < dst_end
+
+
+def _winter_flag(dt):
+    """Winter_time_flag value for a date: 1 = winter, 0 = summer."""
+    return 0 if _israel_is_dst(dt) else 1
+
+
+def _shabbat_setup(test):
+    """Apply the Shabbat auto-mode configuration once before the cycles
+    (per the reference procedure): auto mode, enter/exit offsets, the
+    summer/winter offsets and clear the near-event marker.
+
+    NOTE: this writes device parameters and does not restore them - it is
+    the working Shabbat configuration the test needs.
+    """
+    cfg = [
+        (165, 0),      # Shabbat_mode = auto
+        (166, 60),     # Shabbat_enter_offset (prepare starts 60 min before)
+        (167, 60),     # Shabbat_exit_offset  (real exit 60 min after)
+        (169, 180),    # Summer_offset (UTC+3)
+        (170, 120),    # Winter_offset (UTC+2)
+        (172, 0),      # clear last near-event marker
+    ]
+    for pid, val in cfg:
+        test.hmi.set_param(pid, val)
+        time.sleep(0.2)
+    test.log("  Shabbat config applied: auto mode, enter/exit offset=60, "
+             "summer=180 winter=120")
 
 
 def _watch_for_shabbat(test, hc, timeout):
@@ -216,13 +263,26 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
                        "reason": "HC stream required (STATE: chain) - connect HC"}
 
     # ── ENTRY ──
-    # arrive 6 hours before prepare-shabbat, wait a minute
-    _set_rtc(test, entry_dt - timedelta(hours=6))
+    # set the summer/winter flag for this date so the RTC is interpreted
+    # with the correct offset
+    flag = _winter_flag(entry_dt)
+    test.hmi.set_param(168, flag)
+    info["season"] = "winter" if flag else "summer"
+    time.sleep(0.2)
+    # prepare starts Shabbat_enter_offset minutes BEFORE the calendar entry;
+    # arrive 1 minute before prepare starts so the whole prepare phase runs.
+    enter_offset = _read_param(test, 166, 60)
+    prep_start = entry_dt - timedelta(minutes=enter_offset)
+    arrive = prep_start - timedelta(minutes=1)
+    info["enter_offset"] = enter_offset
+    test.log(f"    [{name}] season={info['season']} enter_offset={enter_offset} "
+             f"-> arrive {arrive.strftime(RTC_FMT)} "
+             f"(prepare starts {prep_start.strftime(RTC_FMT)})")
+    _set_rtc(test, arrive)
     time.sleep(step)
-    # move to 1 minute before prepare-shabbat, arm the auto entry
-    _set_rtc(test, entry_dt - timedelta(minutes=1))
     _hmi(test, "shabbat_auto ENTRY_READY")
-    # GATE: wait for STATE: SHABBAT. The test only continues after this.
+    # GATE: wait for STATE: SHABBAT. The device enters via its ~60-min
+    # internal prepare timeout; the test only continues after SHABBAT.
     entered, seen = _watch_for_shabbat(test, hc, _enter_timeout(test))
     info["enter_states"] = seen[-6:]
     test.log(f"    [{name}] enter chain={'OK' if entered else 'MISSING'} "
@@ -293,6 +353,7 @@ class TestShabbatAuto(BaseTest):
         to_str = "infinite" if to <= 0 else f"{int(to)}s ({int(to // 60)}min)"
         self.log(f"  running {len(sched)} Shabbat cycle(s) for {year} "
                  f"(enter timeout {to_str})")
+        _shabbat_setup(self)
         failed = {}
         for item in sched:
             if self.stop_check():
