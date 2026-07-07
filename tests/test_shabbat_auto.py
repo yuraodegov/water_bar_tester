@@ -107,6 +107,16 @@ def _chain_ok(seen):
     return all(any(s == step for s in it) for step in ENTER_CHAIN)
 
 
+def _read_param(test, pid, default):
+    """Read an HMI integer parameter (get_param, read-only). Returns `default`
+    on any failure. Never writes anything."""
+    try:
+        v = test.hmi.get_param_value(pid)
+        return int(v) if v is not None else default
+    except Exception:
+        return default
+
+
 def _read_exit_offset(test):
     """Read Shabbat_exit_offset (HMI param 167), minutes: how many minutes
     after the calendar exit the device really leaves Shabbat. This only
@@ -175,11 +185,21 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
                        "reason": "HC stream required (STATE: chain) - connect HC"}
 
     # ── ENTRY ──
-    # 1) arrive 6 hours before prepare (= calendar entry), wait a minute
+    # prepare starts Shabbat_enter_offset minutes before the calendar entry.
+    # We only READ the offset (get_param), never write it.
+    enter_offset = _read_param(test, 166, 60)
+    prep_start = entry_dt - timedelta(minutes=enter_offset)
+    info["enter_offset"] = enter_offset
+    # 1) arrive 6 hours before the calendar entry, wait a minute
     _set_rtc(test, entry_dt - timedelta(hours=6))
     time.sleep(step)
-    # 2) move to 1 minute before prepare, arm the auto entry
-    _set_rtc(test, entry_dt - timedelta(minutes=1))
+    # 2) move to 1 minute before prepare STARTS (= entry - enter_offset - 1min),
+    #    then arm the auto entry
+    arrive = prep_start - timedelta(minutes=1)
+    test.log(f"    [{name}] enter_offset={enter_offset}, prepare starts "
+             f"{prep_start.strftime(RTC_FMT)} -> arrive "
+             f"{arrive.strftime(RTC_FMT)}")
+    _set_rtc(test, arrive)
     _hmi(test, "shabbat_auto ENTRY_READY")
     # GATE: wait for STATE: SHABBAT. The device runs prepare (~60 min) then
     # enters; the test only continues after SHABBAT.
