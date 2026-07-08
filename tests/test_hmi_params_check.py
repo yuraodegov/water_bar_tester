@@ -101,6 +101,20 @@ def _hmi(test):
     return h
 
 
+# Volatile / unit-specific params: these legitimately vary (counters,
+# timestamps, debug flags, hardware-dependent), so they are reported as INFO
+# (read but not enforced) instead of failing on an exact match.
+VOLATILE_IDS = {
+    10,    # EventTraceExpand (debug flag)
+    16,    # CleanNetTime (varies)
+    71,    # DebugReportEnabled (debug flag)
+    76,    # CleanNet_Counter (running counter / timestamp)
+    129,   # Technician.Bit.Debug (debug flag)
+    145,   # uvInstallTime (per-unit install time)
+    163,   # AddonConnected (depends on attached hardware)
+}
+
+
 def _check_param(test, param_id: int) -> TestResult:
     err = test._require_hmi()
     if err:
@@ -114,6 +128,9 @@ def _check_param(test, param_id: int) -> TestResult:
     data = {"param_id": param_id, "name": name,
             "expected": expected, "actual": actual}
     test.log(f"  [{param_id}] {name}: expected={expected} actual={actual}")
+    if param_id in VOLATILE_IDS:
+        # value legitimately varies - report it, do not enforce
+        return test._pass(f"INFO [{param_id}] {name}={actual} (volatile)", data)
     if actual == expected:
         return test._pass(f"OK [{param_id}] {name}={actual}", data)
     return test._fail(

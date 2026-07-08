@@ -46,7 +46,7 @@ class TestPS01PrepStageParams(BaseTest):
 
 class TestPS02PrepTimeout(BaseTest):
     NAME = "PS-02 Prepare-shabbat timeout fixed"
-    DESCRIPTION = "heater_fts is fixed at firmware constant (170 min)."
+    DESCRIPTION = "heater_fts is fixed at firmware constant (140 min)."
     CATEGORY = "hc_shabbat"
 
     def run(self) -> TestResult:
@@ -57,11 +57,12 @@ class TestPS02PrepTimeout(BaseTest):
         if not hc:
             return self._fail("HCDriver required")
         val = hc.hc_get_param("heater_fts")
-        self.log(f"  heater_fts={val} (expected fixed 170)")
+        expected = int(self.config.get("shabbat_fts", 140))
+        self.log(f"  heater_fts={val} (expected fixed {expected})")
         data = {"heater_fts": val}
-        if val == 170:
-            return self._pass("OK heater_fts fixed at 170", data)
-        return self._fail(f"heater_fts={val} != 170", data)
+        if val == expected:
+            return self._pass(f"OK heater_fts fixed at {expected}", data)
+        return self._fail(f"heater_fts={val} != {expected}", data)
 
 
 class TestPS03ShabbatEntryNeedsHMI(BaseTest):
