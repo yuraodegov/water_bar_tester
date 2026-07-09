@@ -1,10 +1,11 @@
 """
 tests/test_shabbat_auto.py — automatic Shabbat and 24-hour daily-cycle tests.
 
-The device runs Shabbat in its own automatic mode. This test ONLY moves the
-RTC to the calendar dates and lets the device do its normal work - it does
-NOT write any parameters (writing set_param would switch the device into a
-different mode). The RTC changes only to the required calendar moments.
+The device runs Shabbat in its own automatic mode. This test moves the RTC
+to the calendar dates and lets the device do its normal work. The only
+parameter it writes is the winter/summer flag (168), set per date so the
+device interprets the RTC with the correct offset; it does NOT change the
+Shabbat mode (165) or the enter/exit offsets (166/167).
 
 Cycle (exactly as specified in the field procedure):
 
@@ -159,6 +160,14 @@ def _watch_for_idle(test, hc, settle):
     return idle, seen
 
 
+def _winter_flag(dt):
+    """Winter_time_flag (param 168) by month, matching the field script:
+      summer (0): April..October
+      winter (1): November..March
+    """
+    return 1 if (dt.month >= 11 or dt.month <= 3) else 0
+
+
 def _run_one_cycle(test, entry_dt, exit_dt, name):
     """Run one full Shabbat cycle by moving the RTC only. Returns (ok, info)."""
     step = _step_wait(test)
@@ -170,8 +179,29 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
                        "reason": "HC stream required (STATE: chain) - connect HC"}
 
     # ── ENTRY ──
-    # prepare starts Shabbat_enter_offset minutes before the calendar entry.
-    # We only READ the offset (get_param), never write it.
+    # Set the winter/summer flag for this date so the device interprets the
+    # RTC with the correct offset. This is the ONLY parameter the test writes:
+    # it is the season indicator, not a mode change. Offsets (166/167) and
+    # mode (165) are left untouched.
+    flag = _winter_flag(entry_dt)
+    _hmi(test, f"set_param 168 {flag}")
+    time.sleep(0.3)
+    # read it back to confirm the season flag actually changed
+    try:
+        applied = test.hmi.get_param_value(168)
+    except Exception:
+        applied = None
+    info["season"] = "winter" if flag else "summer"
+    info["flag168_set"] = flag
+    info["flag168_read"] = applied
+    if applied is not None and applied != flag:
+        test.log(f"    [{name}] WARNING set_param 168 {flag} but reads "
+                 f"{applied} (season flag did not apply)")
+    else:
+        test.log(f"    [{name}] season={info['season']} set_param 168 {flag} "
+                 f"(read={applied})")
+    # prepare starts Shabbat_enter_offset minutes before the calendar entry
+    # (fixed value from config, not read from the device).
     enter_offset = int(test.config.get("shabbat_enter_offset", 60))
     prep_start = entry_dt - timedelta(minutes=enter_offset)
     info["enter_offset"] = enter_offset
@@ -181,8 +211,8 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
     # 2) move to 1 minute before prepare STARTS (= entry - enter_offset - 1min),
     #    then arm the auto entry
     arrive = prep_start - timedelta(minutes=1)
-    test.log(f"    [{name}] enter_offset={enter_offset}, prepare starts "
-             f"{prep_start.strftime(RTC_FMT)} -> arrive "
+    test.log(f"    [{name}] enter_offset={enter_offset}, "
+             f"prepare starts {prep_start.strftime(RTC_FMT)} -> arrive "
              f"{arrive.strftime(RTC_FMT)}")
     _set_rtc(test, arrive)
     _hmi(test, "shabbat_auto ENTRY_READY")
