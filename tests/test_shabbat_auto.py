@@ -160,12 +160,13 @@ def _watch_for_idle(test, hc, settle):
     return idle, seen
 
 
-def _winter_flag(dt):
-    """Winter_time_flag (param 168) by month, matching the field script:
-      summer (0): April..October
-      winter (1): November..March
-    """
-    return 1 if (dt.month >= 11 or dt.month <= 3) else 0
+def _season_offset(dt):
+    """Time offset (minutes) for param 169, by month, matching the device:
+      winter (Nov..Mar): 120  (UTC+2)
+      summer (Apr..Oct): 180  (UTC+3)
+    Setting param 169 directly is what actually shifts the device clock
+    (the Winter_time_flag 168 does not)."""
+    return 120 if (dt.month >= 11 or dt.month <= 3) else 180
 
 
 def _run_one_cycle(test, entry_dt, exit_dt, name):
@@ -179,26 +180,26 @@ def _run_one_cycle(test, entry_dt, exit_dt, name):
                        "reason": "HC stream required (STATE: chain) - connect HC"}
 
     # ── ENTRY ──
-    # Set the winter/summer flag for this date so the device interprets the
-    # RTC with the correct offset. This is the ONLY parameter the test writes:
-    # it is the season indicator, not a mode change. Offsets (166/167) and
-    # mode (165) are left untouched.
-    flag = _winter_flag(entry_dt)
-    _hmi(test, f"set_param 168 {flag}")
+    # Set the active time offset (param 169) for this date's season. Writing
+    # 169 directly (120 winter / 180 summer) is what actually shifts the
+    # device clock; the Winter_time_flag (168) does not, so it is not used.
+    # Mode (165) and enter/exit offsets (166/167) are left untouched.
+    offset = _season_offset(entry_dt)
+    _hmi(test, f"set_param 169 {offset}")
     time.sleep(0.3)
-    # read it back to confirm the season flag actually changed
+    # read it back to confirm the offset actually changed
     try:
-        applied = test.hmi.get_param_value(168)
+        applied = test.hmi.get_param_value(169)
     except Exception:
         applied = None
-    info["season"] = "winter" if flag else "summer"
-    info["flag168_set"] = flag
-    info["flag168_read"] = applied
-    if applied is not None and applied != flag:
-        test.log(f"    [{name}] WARNING set_param 168 {flag} but reads "
-                 f"{applied} (season flag did not apply)")
+    info["season"] = "winter" if offset == 120 else "summer"
+    info["offset169_set"] = offset
+    info["offset169_read"] = applied
+    if applied is not None and applied != offset:
+        test.log(f"    [{name}] WARNING set_param 169 {offset} but reads "
+                 f"{applied} (time offset did not apply)")
     else:
-        test.log(f"    [{name}] season={info['season']} set_param 168 {flag} "
+        test.log(f"    [{name}] season={info['season']} set_param 169 {offset} "
                  f"(read={applied})")
     # prepare starts Shabbat_enter_offset minutes before the calendar entry
     # (fixed value from config, not read from the device).
