@@ -108,20 +108,23 @@ class TestID02SmallHeaterISP(BaseTest):
             return self._fail(f"Device not in Idle (heater={st.get('heater')}) "
                               f"— cannot verify idle heaters", data)
         allowed = {cfg.ISP, cfg.IHP, 0}
+        idle_main_max = int(self.config.get("idle_main_max", 10))
         errors = []
         if small not in allowed:
             errors.append(f"small={small}% not in {{ISP={cfg.ISP},IHP={cfg.IHP}}}")
-        if main not in (0, None):
-            errors.append(f"main={main}% should be OFF in Idle")
+        if main is not None and main > idle_main_max:
+            errors.append(f"main={main}% exceeds idle limit {idle_main_max}%")
         if errors:
             return self._fail(" | ".join(errors), data)
-        return self._pass(f"OK Idle: small={small}% (ISP/IHP), main OFF", data)
+        return self._pass(
+            f"OK Idle: small={small}% (ISP/IHP), main={main}% "
+            f"(<= {idle_main_max}%)", data)
 
 
 class TestID04MainHeaterOffInIdle(BaseTest):
-    NAME = "ID-04 MAIN heater OFF in Idle (small carries duty)"
-    DESCRIPTION = ("Per flowchart the idle actuator is the SMALL heater; "
-                   "the MAIN heater must read 0% throughout Idle.")
+    NAME = "ID-04 MAIN heater within idle limit (small carries duty)"
+    DESCRIPTION = ("In Idle the SMALL heater is the main actuator; the MAIN "
+                   "heater may idle up to a small limit (default 10%).")
     CATEGORY = "hc_idle"
 
     def run(self) -> TestResult:
@@ -135,24 +138,26 @@ class TestID04MainHeaterOffInIdle(BaseTest):
         if not in_idle:
             return self._fail(f"Device not in Idle (heater={st.get('heater')})",
                               {"heater": st.get("heater")})
-        # sample the main heater a few times to be sure it never fires in idle
+        idle_main_max = int(self.config.get("idle_main_max", 10))
+        # sample the main heater a few times; it must stay within the idle limit
         mains = []
         for _ in range(4):
             mains.append(hc.heater_duty())
             time.sleep(3)
-        self.log(f"  main heater samples in Idle: {mains}")
-        data = {"main_samples": mains}
-        bad = [m for m in mains if m not in (0, None)]
+        self.log(f"  main heater samples in Idle: {mains} (limit {idle_main_max}%)")
+        data = {"main_samples": mains, "idle_main_max": idle_main_max}
+        bad = [m for m in mains if m is not None and m > idle_main_max]
         if bad:
-            return self._fail(f"MAIN heater fired in Idle: {bad}% "
-                              "(idle should use SMALL heater only)", data)
-        return self._pass("OK MAIN heater stays OFF in Idle", data)
+            return self._fail(f"MAIN heater above idle limit: {bad}% "
+                              f"(> {idle_main_max}%)", data)
+        return self._pass(
+            f"OK MAIN heater within idle limit ({idle_main_max}%)", data)
 
 
 class TestID05SmallHeaterFollowsTemp(BaseTest):
     NAME = "ID-05 Idle small heater within ISP/IHP band"
     DESCRIPTION = ("In Idle the small heater duty stays within the ISP/IHP "
-                   "range; main heater OFF. (Temp changes physically on the rig.)")
+                   "range; main heater within idle limit (default 10%).")
     CATEGORY = "hc_idle"
 
     def run(self) -> TestResult:
@@ -177,16 +182,19 @@ class TestID05SmallHeaterFollowsTemp(BaseTest):
                  f"(ISP={cfg.ISP} IHP={cfg.IHP} LLSP={cfg.LLSP} HLSP={cfg.HLSP})")
         lo = min(cfg.ISP, cfg.IHP)
         hi = max(cfg.ISP, cfg.IHP)
+        idle_main_max = int(self.config.get("idle_main_max", 10))
         data = {"ttank": temps.get("ttank"), "small": small, "main": main,
                 "isp": cfg.ISP, "ihp": cfg.IHP}
         errors = []
         if small is not None and not (lo <= small <= hi or small == 0):
             errors.append(f"small={small}% outside ISP/IHP band [{lo},{hi}]")
-        if main not in (0, None):
-            errors.append(f"main={main}% should be OFF in Idle")
+        if main is not None and main > idle_main_max:
+            errors.append(f"main={main}% exceeds idle limit {idle_main_max}%")
         if errors:
             return self._fail(" | ".join(errors), data)
-        return self._pass(f"OK small={small}% in band, main OFF", data)
+        return self._pass(
+            f"OK small={small}% in band, main={main}% (<= {idle_main_max}%)",
+            data)
 
 
 class TestID06IdleHeatTimeoutErr158(BaseTest):

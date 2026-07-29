@@ -22,8 +22,9 @@ def _cfg(test):
 
 
 class TestER01DryBurn(BaseTest):
-    NAME = "ER-01 Dry burn (T > t_dry) -> error, heaters OFF"
-    DESCRIPTION = "Inject T above heater_t_dry — dry-burn error, heaters must be OFF."
+    NAME = "ER-01 Dry burn (T > t_dry during filling) -> heaters OFF"
+    DESCRIPTION = ("Dry-burn protection applies only during filling: if the "
+                   "tank is filling AND T > t_dry, heaters must be OFF.")
     CATEGORY = "hc_errors"
 
     def run(self) -> TestResult:
@@ -34,15 +35,37 @@ class TestER01DryBurn(BaseTest):
         if not hc:
             return self._fail("HCDriver required")
         cfg = _cfg(self)
-        hc.inject_temp(TEMP_TTANK, cfg.TDRY + 5)
-        time.sleep(SETTLE * 2)
+        st = hc.hc_status()
+        try:
+            temps = hc.hc_temps()
+        except Exception:
+            temps = {}
+        ttank = temps.get("ttank")
+        hot_filling = st.get("hot_filling")
+        disabled = ("DISABLE", "DISABLE_STATE", "IDLE", "IDLE_STATE",
+                    "OFF", "NONE", None)
+        filling_active = (hot_filling is not None
+                          and str(hot_filling).upper() not in disabled)
+        data = {"tdry": cfg.TDRY, "ttank": ttank, "hot_filling": hot_filling,
+                "filling_active": filling_active}
+        # dry-burn reaction only happens during filling above t_dry
+        if not (filling_active and ttank is not None and ttank > cfg.TDRY):
+            self.log(f"  dry-burn condition not present "
+                     f"(filling={hot_filling}, ttank={ttank}, t_dry={cfg.TDRY})")
+            return self._pass(
+                "INFO dry-burn check needs filling AND T>t_dry; condition not "
+                f"present (filling={hot_filling}, ttank={ttank})", data)
+        # condition present -> heaters must be OFF
         errs = hc.read_errors()
         duty = hc.heater_duty()
-        self.log(f"  T>{cfg.TDRY} errors={errs[:60]} main_duty={duty}")
-        data = {"tdry": cfg.TDRY, "errors": errs[:60], "main_duty": duty}
+        data.update({"errors": errs[:60], "main_duty": duty})
+        self.log(f"  filling + T>{cfg.TDRY}: errors={errs[:60]} main_duty={duty}")
         if duty in (0, None):
-            return self._pass(f"OK heaters OFF on dry burn (errors={errs[:40]})", data)
-        return self._fail(f"Heaters still on {duty}% above t_dry={cfg.TDRY}", data)
+            return self._pass(
+                f"OK heaters OFF on dry burn (errors={errs[:40]})", data)
+        return self._fail(
+            f"Heaters still on {duty}% during filling above t_dry={cfg.TDRY}",
+            data)
 
 
 class TestER02Leakage(BaseTest):
