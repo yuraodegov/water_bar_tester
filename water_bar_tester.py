@@ -24,6 +24,10 @@ from runner.runner import TestRunner, discover_tests  # noqa: E402
 
 # Map raw CATEGORY -> display group
 def _group_of(category: str) -> str:
+    if category.startswith("cert"):
+        return "Certificate / SSL"
+    if category.startswith("shabbat"):
+        return "Shabbat & Daily Cycle"
     if category.startswith("hc_"):
         return "HC (Hydraulic Controller)"
     if category.startswith("hmi_"):
@@ -39,6 +43,8 @@ GROUP_ORDER = [
     "HMI (User Interface)",
     "HC (Hydraulic Controller)",
     "Cross-device",
+    "Certificate / SSL",
+    "Shabbat & Daily Cycle",
     "Other",
 ]
 
