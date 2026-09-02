@@ -26,6 +26,8 @@ from runner.runner import TestRunner, discover_tests  # noqa: E402
 def _group_of(category: str) -> str:
     if category.startswith("cert"):
         return "Certificate / SSL"
+    if category.startswith("ota"):
+        return "OTA / Firmware"
     if category.startswith("shabbat"):
         return "Shabbat & Daily Cycle"
     if category.startswith("hc_"):
@@ -44,6 +46,7 @@ GROUP_ORDER = [
     "HC (Hydraulic Controller)",
     "Cross-device",
     "Certificate / SSL",
+    "OTA / Firmware",
     "Shabbat & Daily Cycle",
     "Other",
 ]
