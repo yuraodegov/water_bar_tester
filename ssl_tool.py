@@ -123,10 +123,14 @@ def get_vsn(port: str, baud: int = 115200, timeout: float = 10) -> str:
     """Read the VSN from the device via `get_vsn`."""
     with _open_serial(port, baud, timeout) as ser:
         resp = send_command(ser, "get_vsn", wait=2.0)
-    m = re.search(r"VSN[:\s]+([A-Za-z0-9_\-]+)", resp, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    lines = [ln.strip() for ln in resp.splitlines() if ln.strip()]
+    for m in re.finditer(r"VSN\s*:\s*([A-Za-z0-9_\-]+)", resp, re.IGNORECASE):
+        val = m.group(1).strip()
+        if val and val.upper() != "VSN":
+            return val
+    skip = {"GET_VSN", "VSN", "CMD", "EXECUTE", "OK", "ERROR", "FAILED"}
+    lines = [ln.strip() for ln in resp.splitlines()
+             if ln.strip() and not ln.strip().startswith(">")
+             and ln.strip().upper() not in skip]
     if lines:
         return lines[0]
     raise ValueError(f"Could not parse VSN from reply: {resp!r}")

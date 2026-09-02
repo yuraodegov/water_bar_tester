@@ -26,13 +26,17 @@ API_BASE = os.environ.get(
 def _vsn_from(resp: str):
     if not resp:
         return None
-    m = re.search(r"VSN[:\s]+([A-Za-z0-9_\-]+)", resp, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
+    # device replies "VSN:SODAWWR" — require the colon and reject the literal
+    # token "VSN" (which also appears inside the echoed "get_vsn" command).
+    for m in re.finditer(r"VSN\s*:\s*([A-Za-z0-9_\-]+)", resp, re.IGNORECASE):
+        val = m.group(1).strip()
+        if val and val.upper() != "VSN":
+            return val
+    # fallback: a standalone identifier line that is not echo/prompt/keyword
+    skip = {"GET_VSN", "VSN", "CMD", "EXECUTE", "OK", "ERROR", "FAILED"}
     for ln in resp.splitlines():
         ln = ln.strip()
-        # skip echo of the command and prompt lines
-        if ln and ln.lower() != "get_vsn" and not ln.startswith(">"):
+        if ln and not ln.startswith(">") and ln.upper() not in skip:
             if re.fullmatch(r"[A-Za-z0-9_\-]{4,}", ln):
                 return ln
     return None
@@ -78,9 +82,13 @@ class TestCert02Csr(BaseTest):
         vsn = _vsn_from(self.hmi.send_command("get_vsn"))
         if not vsn:
             return self._fail("cannot generate CSR without a VSN")
-        resp = self.hmi.send_command(f"generatecsr {vsn} {slot}")
+        resp = self.hmi.send_command(f"generatecsr {vsn} {slot}") or ""
         csr = _csr_from(resp)
         data = {"vsn": vsn, "slot": slot, "has_csr": bool(csr)}
+        if "CMD EXECUTE ERROR" in resp or resp.strip() == "FAILED":
+            return self._fail(
+                f"device rejected generatecsr for VSN={vsn} slot={slot} "
+                f"(CMD EXECUTE ERROR)", data)
         if csr:
             self.log(f"  CSR generated ({len(csr)} bytes)")
             self._csr = csr           # cache for CERT-03 within same run
@@ -120,7 +128,7 @@ class TestCert03Sign(BaseTest):
         vsn = _vsn_from(self.hmi.send_command("get_vsn"))
         if not vsn:
             return self._fail("cannot sign without a VSN")
-        csr = _csr_from(self.hmi.send_command(f"generatecsr {vsn} {slot}"))
+        csr = _csr_from(self.hmi.send_command(f"generatecsr {vsn} {slot}") or "")
         if not csr:
             return self._fail("device did not return a CSR to sign")
 
